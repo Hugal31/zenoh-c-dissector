@@ -134,6 +134,8 @@ static int hf_linkstate_link;
 static int hf_rmw_zenoh_sequence_number;
 static int hf_rmw_zenoh_timestamp;
 static int hf_rmw_zenoh_source_gid;
+static int hf_reply_to_query;
+static int hf_query_to_reply;
 int ett_zenoh;
 
 static hf_register_info hf[] = {
@@ -201,6 +203,8 @@ static hf_register_info hf[] = {
 {&hf_rmw_zenoh_sequence_number, "Sequence number", "zenohc.rmw_zenoh.sn", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL},
 {&hf_rmw_zenoh_timestamp, "Timestamp", "zenohc.rmw_zenoh.timestamp", FT_ABSOLUTE_TIME, ABSOLUTE_TIME_LOCAL, NULL, 0, NULL, HFILL},
 {&hf_rmw_zenoh_source_gid, "Source GID", "zenohc.rmw_zenoh.source_gid", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL},
+{&hf_reply_to_query, "Reply in", "zenohc.query.reply_frame", FT_FRAMENUM, BASE_NONE, NULL, 0, NULL, HFILL},
+{&hf_query_to_reply, "Query in", "zenohc.reply.query_frame", FT_FRAMENUM, BASE_NONE, NULL, 0, NULL, HFILL},
 };
 
 static int dissect_declare_keyexpr(tvbuff_t *tvb, packet_info *pinfo,
@@ -459,7 +463,18 @@ static int dissect_request(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
   const bool has_exts = (msg_header & 0x80) != 0;
 
   // TODO Link query and reply
-  offset = dissect_zint(tvb, tree, offset + 1, hf_query_id, NULL, NULL);
+  uint64_t id;
+  offset = dissect_zint(tvb, tree, offset + 1, hf_query_id, NULL, &id);
+
+  register_query(pinfo, (uint32_t)id);
+  wmem_list_t *replies = get_replies(pinfo, (uint32_t)id, true);
+  for (wmem_list_frame_t *frame = replies ? wmem_list_head(replies) : NULL; frame != NULL;
+       frame = wmem_list_frame_next(frame)) {
+    uint32_t num = (uint32_t)(uint64_t)wmem_list_frame_data(frame);
+    proto_item *id_item = proto_tree_add_uint(tree, hf_reply_to_query, tvb, 0, 0, num);
+    proto_item_set_generated(id_item);
+  }
+
   offset = dissect_key_expr(tvb, pinfo, tree, offset, has_suffix, mapping,
                             NULL);
 
@@ -495,13 +510,23 @@ static int dissect_response(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
   const bool mapping = (msg_header & 0x40) != 0;
   const bool has_exts = (msg_header & 0x80) != 0;
 
-  offset = dissect_zint(tvb, tree, offset + 1, hf_query_id, NULL, NULL);
+  uint64_t id;
+  offset = dissect_zint(tvb, tree, offset + 1, hf_query_id, NULL, &id);
+
+  register_reply(pinfo, (uint32_t)id);
+  wmem_list_t *queries = get_queries(pinfo, (uint32_t)id, false);
+  for (wmem_list_frame_t *frame = queries ? wmem_list_head(queries) : NULL; frame != NULL;
+         frame = wmem_list_frame_next(frame)) {
+    uint32_t num = (uint32_t)(uint64_t)wmem_list_frame_data(frame);
+    proto_item *id_item = proto_tree_add_uint(tree, hf_query_to_reply, tvb, 0, 0, num);
+    proto_item_set_generated(id_item);
+  }
+
   offset = dissect_key_expr(tvb, pinfo, tree, offset, has_suffix, mapping,
                             NULL);
 
   if (has_exts)
     offset = dissect_exts(tvb, pinfo, tree, offset, default_ext_dissector_table, NULL);
-
 
   const uint8_t payload_header = tvb_get_uint8(tvb, offset);
   switch (payload_header & 0x1F) {
@@ -514,7 +539,17 @@ static int dissect_response_final(tvbuff_t *tvb, packet_info *pinfo, proto_tree 
   const uint8_t msg_header = tvb_get_uint8(tvb, offset);
   const bool has_exts = (msg_header & 0x80) != 0;
 
-  offset = dissect_zint(tvb, tree, offset + 1, hf_query_id, NULL, NULL);
+  uint64_t id;
+  offset = dissect_zint(tvb, tree, offset + 1, hf_query_id, NULL, &id);
+
+  register_reply(pinfo, (uint32_t)id);
+  wmem_list_t *queries = get_queries(pinfo, (uint32_t)id, false);
+  for (wmem_list_frame_t *frame = queries ? wmem_list_head(queries) : NULL; frame != NULL;
+         frame = wmem_list_frame_next(frame)) {
+    uint32_t num = (uint32_t)(uint64_t)wmem_list_frame_data(frame);
+    proto_item *id_item = proto_tree_add_uint(tree, hf_query_to_reply, tvb, 0, 0, num);
+    proto_item_set_generated(id_item);
+  }
 
   if (has_exts)
     offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
@@ -607,7 +642,7 @@ static int dissect_net_message(tvbuff_t *tvb, packet_info *pinfo,
   case ZENOH_NET_OAM: hfindex = hf_net_oam; break;
   }
   proto_item *subtree_item = proto_tree_add_item(tree, hfindex, tvb, offset, 1, ENC_NA);
-  proto_item_set_text(subtree_item, type_str ? type_str : "Unknown");
+  proto_item_set_text(subtree_item, "%s", type_str ? type_str : "Unknown");
   proto_tree *subtree = proto_item_add_subtree(subtree_item, ett_zenoh);
 
   if (type_str == NULL)
