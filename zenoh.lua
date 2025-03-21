@@ -62,7 +62,7 @@ local priority_names = {
 }
 local transport_body_type_field = ProtoField.uint8("zenoh2.type", "Transport body type", nil, transport_body_type_names, 0x1F)
 local init_ack_field = ProtoField.bool("zenoh2.init.ack", "Is ack", 8, nil, 0x20)
-local init_size_field = ProtoField.bool("zenoh2.init.size", "Size", 8, nil, 0x30)
+local init_size_field = ProtoField.bool("zenoh2.init.size", "Size", 8, nil, 0x40)
 local fragment_has_more_field = ProtoField.bool("zenoh2.fragment.has_more", "Has more", 8, nil, 0x40)
 local proto_version_field = ProtoField.uint8("zenoh2.version", "Protocol version", base.DEC)
 local what_am_i_field = ProtoField.uint8("zenoh2.wai", "What Am I", base.DEC, what_am_i_names, 3)
@@ -337,7 +337,7 @@ local function dissect_qos_type(buffer, pinfo, tree)
    if buffer:len() == 1 then
       byte = buffer:uint()
    else
-      data = read_zint(buffer)[1]
+      byte = read_zint(buffer)[1]
    end
    local priority = byte & 0x07
    local blocking = byte & 0x08 ~=0
@@ -391,7 +391,7 @@ local function zenoh_protocol_read_ext(buffer, pinfo, tree, dissectors)
       if dissectors and dissectors[id] ~= nil then
          dissectors[id](data, pinfo, subtree)
       end
-      return {2 + length, has_more}
+      return {offset + length, has_more}
    else
       return {2, has_more}
    end
@@ -513,14 +513,16 @@ local function zenoh_protocol_dissect_declare_keyexpr(buffer, pinfo, tree)
    local offset = 1
 
    local expr_id_ret = read_zint(buffer(offset))
-   tree:add(expr_id_field, buffer(offset, expr_id_ret[2]))
+   tree:add_le(expr_id_field, buffer(offset, expr_id_ret[2]), expr_id_ret[1])
    offset = offset + expr_id_ret[2]
 
    local key_expr_ret = dissect_keyexpr(buffer(offset), pinfo, tree, has_named, true, key_expr_field)
    offset = offset + key_expr_ret[2]
 
    local key_expr_cache = get_key_exprs_cache(pinfo, true)
-   key_expr_cache[expr_id_ret[1]] = key_expr_ret[1]
+   if key_expr_cache then
+     key_expr_cache[expr_id_ret[1]] = key_expr_ret[1]
+   end
 
    return offset
 end
@@ -804,9 +806,51 @@ local function zenoh_protocol_dissect_frame(buffer, pinfo, tree)
    return true
 end
 
+local init_sn_resolution_field = ProtoField.uint8("zenoh.init.sn_resolution", "Serial number resolution", base.DEC, nil, 3)
+local init_id_resolution_field = ProtoField.uint8("zenoh.init.id_resolution", "Request ID resolution", base.DEC, nil, 0xC)
+local init_batch_size_field = ProtoField.uint16("zenoh.init.batch_size", "Batch size", base.DEC)
+local cookie_field = ProtoField.bytes("zenoh.cookie", "Cookie", base.None)
+table.insert(zenoh_protocol.fields, init_sn_resolution_field)
+table.insert(zenoh_protocol.fields, init_id_resolution_field)
+table.insert(zenoh_protocol.fields, init_batch_size_field)
+table.insert(zenoh_protocol.fields, cookie_field)
+
+local function read_qos_ext(buffer, pinfo, tree)
+   local ret = read_zint(buffer)
+   local value = ret[1]
+   tree:add(ext_value_field, buffer):set_text(string.format("Value: %d", value))
+
+   if value == 0 then
+      tree:set_text("QosExt { NoQoS }")
+   elseif value == 1 then
+      tree:set_text("QosExt { priorities: None, reliablity: None }")
+   elseif value & 6 ~= 0 then
+      local tag = value & 0x7
+
+      local priorities = "None"
+      local has_priorites = tag & 2 ~= 0
+      if has_priorites then
+         local priority_start = (value >> 3) & 0xFF
+         local priority_end = (value >> (3 + 8)) & 0xFF
+         local priority_start_str = priority_names[priority_start] or priority_start
+         local priority_end_str = priority_names[priority_end] or priority_start
+         priorities = string.format("[%s - %s]", priority_start_str, priority_end_str)
+      end
+
+      local reliability = "None"
+      local has_reliability = tag & 4 ~= 0
+      if has_reliability then
+         reliability = (value >> (3 + 8 + 8)) & 1 ~= 0
+      end
+      tree:set_text(string.format("QosExt { priorities: %s, reliablity: %s }", priorities, reliability))
+   end
+end
+
 local function zenoh_protocol_dissect_init(buffer, pinfo, tree)
    local first_byte = buffer(0, 1)
    local is_ack = (first_byte:uint()) & 0x20 ~= 0
+   local has_size = (first_byte:uint()) & 0x40 ~= 0
+   local has_exts = (first_byte:uint()) & 0x80 ~= 0
    local subtree = tree:add(is_ack and "InitAck" or "InitSyn")
    pinfo.cols.info:append((is_ack and "InitAck" or "InitSyn") .. ",")
    subtree:add(init_ack_field, first_byte)
@@ -823,6 +867,9 @@ local function zenoh_protocol_dissect_init(buffer, pinfo, tree)
    local zid_string = zenoh_utils.zid_to_string(zid_buf)
    zid_tree:set_text("ZID: " .. zid_string)
 
+   local offset = 3 + zid_len
+
+   -- Register the conversation ZID.
    local net_conv_data = get_net_conv_data(pinfo)
    local net_src = tostring(pinfo.net_src)
    if net_conv_data[net_src] == nil then
@@ -830,6 +877,71 @@ local function zenoh_protocol_dissect_init(buffer, pinfo, tree)
    end
    net_conv_data[net_src][pinfo.src_port] = zid_string
    -- print(string.format("Register %s:%s -> %s:%s to be %s", net_src, pinfo.src_port, pinfo.net_dst, pinfo.dst_port, zid_string))
+
+   if has_size then
+      local resolutions = buffer(offset, 1)
+      subtree:add(init_sn_resolution_field, resolutions)
+      subtree:add(init_id_resolution_field, resolutions)
+      offset = offset + 1
+
+      subtree:add_le(init_batch_size_field, buffer(offset, 2))
+      --local ret = dissect_zint(subtree, init_batch_size_field, buffer(offset))
+      offset = offset + 2 --ret[2]
+   end
+
+   if is_ack then
+      ret = read_zint(buffer(offset))
+      offset = offset + ret[2]
+      subtree:add(cookie_field, buffer(offset, ret[1]))
+      offset = offset + ret[1]
+   end
+
+   if has_exts then
+      offset = offset + zenoh_protocol_read_exts(buffer(offset), pinfo, subtree, {
+                                                    [1] = read_qos_ext,
+                                                    [6] = function (buffer, pinfo, tree) tree:set_text("Compression enabled (6)") end,
+                                                })
+   end
+
+   return offset
+end
+
+local function zenoh_protocol_dissect_open(buffer, pinfo, tree)
+   local first_byte = buffer(0, 1)
+   local is_ack = (first_byte:uint()) & 0x20 ~= 0
+   local has_exts = (first_byte:uint()) & 0x80 ~= 0
+   local title = is_ack and "OpenAck" or "OpenSyn"
+   local subtree = tree:add(title)
+   pinfo.cols.info:append(title .. ",")
+
+   local offset = 1
+   local ret = read_zint(buffer(offset))
+   subtree:add_le(buffer(offset, ret[2]), string.format("Lease: %ds", ret[1]))
+   offset = offset + ret[2]
+
+   ret = read_zint(buffer(offset))
+   subtree:add_le(buffer(offset, ret[2]), string.format("SN: %d", ret[1]))
+   offset = offset + ret[2]
+
+   if not is_ack then
+      ret = read_zint(buffer(offset))
+      offset = offset + ret[2]
+      local cookie = buffer(offset, ret[1])
+      subtree:add(cookie, string.format("Cookie: %s", cookie))
+      offset = offset + ret[1]
+   end
+
+   is_compressed = false
+   if has_exts then
+      offset = offset + zenoh_protocol_read_exts(buffer(offset), pinfo, subtree, {
+                                                    [6] = function (b, p, t) is_compressed = true end,
+                                                })
+   end
+
+   local net_conv_data = get_net_conv_data(pinfo)
+   if is_compressed and is_ack then
+      net_conv_data["compression"] = pinfo.number
+   end
 
    return offset
 end
@@ -870,11 +982,13 @@ local function zenoh_protocol_dissect_message(buffer, pinfo, tree)
    local message_type = buffer(0, 1):uint() & 0x1F
    if message_type == 0x1 then
       return zenoh_protocol_dissect_init(buffer, pinfo, subtree)
+   elseif message_type == 0x2 then
+      return zenoh_protocol_dissect_open(buffer, pinfo, subtree)
    elseif message_type == 0x5 then
       return zenoh_protocol_dissect_frame(buffer, pinfo, subtree)
    elseif message_type == 0x6 then
       return zenoh_protocol_dissect_fragment(buffer, pinfo, subtree)
-   else
+   elseif transport_body_type_names[message_type] then
       pinfo.cols.info:append(transport_body_type_names[message_type])
       return true
    end
@@ -884,7 +998,7 @@ end
 local function zenoh_protocol_get_header_length(buffer, pinfo, offset)
    local msg_length = buffer(offset, 2):le_uint()
    local first_byte = buffer(2, 1):uint()
-   local has_more = (first_byte & 0x40) ~= 0
+   -- local has_more = (first_byte & 0x40) ~= 0
    local offset = 2 + msg_length
    --[[while (first_byte & 0x1F) == 0x6 and has_more and offset < buffer:len() do
       -- This is never used...
@@ -898,7 +1012,9 @@ local function zenoh_protocol_get_header_length(buffer, pinfo, offset)
 end
 
 local function zenoh_protocol_dissect_packet(buffer, pinfo, tree)
+   local used_buffer = buffer
    if ip_proto()() == 6 then
+
       --[[local offset = 2
       local first_byte = buffer(offset, 1):uint()
       local has_more = (first_byte & 0x40) ~= 0
@@ -915,17 +1031,32 @@ local function zenoh_protocol_dissect_packet(buffer, pinfo, tree)
          print("Ask for a bigger read of ", offset + 3)
          return dissect_tcp_pdus(buffer, tree, offset + 3, zenoh_protocol_get_header_length, zenoh_protocol_dissect_packet)
       end-]]
-      buffer = buffer(2)
+      used_buffer = buffer(2)
    end
-   local old_info = pinfo.cols.info
+   local old_info = tostring(pinfo.cols.info)
    if pinfo.cols.protocol ~= "Zenoh" then
       pinfo.cols.protocol = "Zenoh"
-      pinfo.cols.info = string.format("%u -> %u ", pinfo.src_port, pinfo.dst_port)
+      pinfo.cols.info:set(string.format("%u -> %u ", pinfo.src_port, pinfo.dst_port))
    end
-   if zenoh_protocol_dissect_message(buffer, pinfo, tree) ~= false then
+   local conv_data = get_net_conv_data(pinfo)
+   local has_compression = conv_data["compression"] and conv_data["compression"] < pinfo.number
+   local is_compressed = false
+   if has_compression then
+      is_compressed = used_buffer(0, 1):uint() & 1 ~= 0
+      used_buffer = used_buffer(1)
+   end
+   if is_compressed then
+      -- Requires our patch of wireshark.
+      local decompressed = used_buffer:uncompress_lz4("LZ4 compressed")
+      -- tree:add(zenoh_protocol, used_buffer)
+      -- pinfo.cols.info:append("LZ4 compressed data")
+      if zenoh_protocol_dissect_message(decompressed, pinfo, tree) then
+         return true
+      end
+   elseif zenoh_protocol_dissect_message(used_buffer, pinfo, tree) then
       return true
    end
-   pinfo.cols.info:set_text(old_info)
+   pinfo.cols.info:set(old_info)
    return false
 end
 
