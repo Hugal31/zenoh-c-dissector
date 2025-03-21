@@ -20,8 +20,7 @@ static struct net_conv_data_t *net_conv_new(wmem_allocator_t *allocator) {
   return conv;
 }
 
-// Return 0 or 1, an arbitrary order between the sender and the receiver.
-static uint8_t is_low_or_high(const packet_info *pinfo) {
+uint8_t is_low_or_high(const packet_info *pinfo) {
   if (pinfo->srcport < pinfo->destport)
     return 0;
   if (pinfo->srcport > pinfo->destport)

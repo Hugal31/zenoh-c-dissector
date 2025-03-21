@@ -13,6 +13,8 @@ struct zenoh_conv_data_side_t {
   wmem_tree_t *query_frame_num_cache;
 };
 
+/// A conversation between two zenoh nodes.
+/// Can span over multiple network conversations (e.g. TCP, UDP, etc...).
 struct zenoh_conv_data_t {
   struct zenoh_conv_data_side_t sides[2];
 };
@@ -23,6 +25,10 @@ struct net_conv_data_t {
   bool compression_negotiated;
   uint32_t compression_start;
 };
+
+/// Return 0 or 1, an arbitrary order between the sender and the receiver in
+/// net_conv_data_t.zids and zenoh_conv_data_t.sides.
+uint8_t is_low_or_high(const packet_info *pinfo);
 
 struct zenoh_conv_data_t *get_zenoh_conv_data(const packet_info *pinfo);
 struct net_conv_data_t *get_net_conv_data(const packet_info *pinfo);

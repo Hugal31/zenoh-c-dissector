@@ -93,6 +93,8 @@ static int hf_zenoh_net_msg_type;
 static int hf_zenoh_proto_version;
 static int hf_what_am_i;
 static int hf_zid;
+static int hf_sender_zid;
+static int hf_receiver_zid;
 static int hf_sn_res;
 static int hf_id_res;
 static int hf_batch_size;
@@ -162,6 +164,8 @@ static hf_register_info hf[] = {
     {&hf_what_am_i,
      {"What A I", "zenohc.wai", FT_UINT8, BASE_DEC, VALS(zh_what_am_i_names), 0b11, NULL, HFILL}},
     {&hf_zid, {"ZID", "zenohc.zid", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL}},
+{&hf_sender_zid, {"Sender ZID", "zenohc.sender_zid", FT_STRING, BASE_NONE, NULL, 0, NULL, HFILL}},
+{&hf_receiver_zid, {"Receiver ZID", "zenohc.receiver_zid", FT_STRING, BASE_NONE, NULL, 0, NULL, HFILL}},
     {&hf_sn_res, "SN resolution", "zenohc.sn_res", FT_UINT8, BASE_DEC, NULL, 0b11, NULL, HFILL},
     {&hf_id_res, "Request ID resolution", "zenohc.id_res", FT_UINT8, BASE_DEC, NULL, 0b1100, NULL, HFILL},
     {&hf_batch_size, "Batch size", "zenohc.batch_size", FT_UINT16, BASE_DEC, NULL, 0, NULL, HFILL},
@@ -429,6 +433,11 @@ static int dissect_push(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
   return dissect_response_body(tvb, pinfo, tree, offset, data);
 }
 
+static struct ext_dissector_table_entry query_exts[] = {
+  {5, &dissect_attachment},
+  {0, NULL},
+};
+
 static int dissect_query(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
                            int offset, void *data) {
   const uint8_t msg_header = tvb_get_uint8(tvb, offset);
@@ -450,7 +459,7 @@ static int dissect_query(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
   }
 
   if (has_exts)
-    offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
+    offset = dissect_exts(tvb, pinfo, tree, offset, query_exts, NULL);
 
   return offset;
 }
@@ -817,9 +826,19 @@ static int dissect_transport_msg(tvbuff_t *tvb, packet_info *pinfo,
                                  proto_tree *tree, void *data) {
   proto_item *ti = proto_tree_add_item(tree, proto_zenoh, tvb, 0, -1, ENC_NA);
   proto_tree *proto_tree = proto_item_add_subtree(ti, ett_zenoh);
+
+  struct net_conv_data_t *conv_data = get_net_conv_data(pinfo);
+  uint8_t low_or_high = is_low_or_high(pinfo);
+  const char *zid = conv_data->zids[low_or_high];
+  if (zid)
+    proto_item_set_generated(proto_tree_add_string(proto_tree, hf_sender_zid, tvb, 0, -1, zid));
+  zid = conv_data->zids[!low_or_high];
+  if (zid)
+    proto_item_set_generated(proto_tree_add_string(proto_tree, hf_receiver_zid, tvb, 0, -1, zid));
+
   proto_tree_add_item(proto_tree, hf_zenoh_transport_msg_type, tvb, 0, 1, ENC_LITTLE_ENDIAN);
-  uint8_t msg_header = tvb_get_uint8(tvb, 0);
-  uint8_t msg_type = msg_header & 0x1F;
+  const uint8_t msg_header = tvb_get_uint8(tvb, 0);
+  const uint8_t msg_type = msg_header & 0x1F;
 
   switch (msg_type) {
   case ZENOH_TRANSPORT_INIT:
