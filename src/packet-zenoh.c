@@ -5,6 +5,7 @@
 #include "exts.h"
 #include "fields.h"
 #include "key_exprs.h"
+#include "lz4.h"
 #include "utils.h"
 
 WS_DLL_PUBLIC_DEF char const *plugin_version = "0.1.0";
@@ -55,12 +56,26 @@ V( ZENOH_DECL_FINAL, 0x1A, "DeclareFinal" )
 VALUE_STRING_ENUM(zh_declare_type_names);
 VALUE_STRING_ARRAY(zh_declare_type_names);
 
+#define zh_push_body_names_VALUE_STRING_LIST(V)                                \
+  V( ZENOH_PUSH_PUT, 0x01, "Put" )                                              \
+  V( ZENOH_PUSH_DEL, 0x02, "Del" )
+
+VALUE_STRING_ARRAY(zh_push_body_names);
+VALUE_STRING_ENUM(zh_push_body_names);
+
 #define zh_what_am_i_names_VALUE_STRING_LIST(V) \
   V( ZENOH_ROUTER, 0b00, "Router" ) \
   V( ZENOH_PEER, 0b01, "Peer" ) \
   V( ZENOH_CLIENT, 0b10, "Client" )
 
 VALUE_STRING_ARRAY(zh_what_am_i_names);
+
+#define zh_consolidation_names_VALUE_STRING_LIST(V) \
+  V( ZENOH_CONSOLIDATION_AUTO, 0, "Auto" ) \
+  V( ZENOH_CONSOLIDATION_NONE, 1, "None" ) \
+  V( ZENOH_CONSOLIDATION_MONOTONIC, 2, "Monotonic" ) \
+  V( ZENOH_CONSOLIDATION_LATEST, 3, "Latest" )
+VALUE_STRING_ARRAY(zh_consolidation_names);
 
 // Fields
 static int hf_zenoh_transport_msg_type;
@@ -84,9 +99,17 @@ int hf_key_expr;
 int hf_key_expr_scope;
 int hf_key_expr_suffix;
 static int hf_key_expr_id;
+static int hf_query_id;
 static int hf_interest;
 static int hf_sub_id;
 static int hf_token_id;
+static int hf_timestamp;
+static int hf_timestamp_hlc;
+static int hf_encoding_id;
+static int hf_encoding_schema;
+static int hf_put_payload;
+static int hf_query_payload;
+static int hf_consolidation;
 int ett_zenoh;
 
 static hf_register_info hf[] = {
@@ -128,9 +151,17 @@ static hf_register_info hf[] = {
 {&hf_key_expr_scope, "Key Expr scope", "zenohc.key_expr.scope", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL},
 {&hf_key_expr_suffix, "Key Expr suffix", "zenohc.key_expr.suffix", FT_STRING, BASE_NONE, NULL, 0, NULL, HFILL},
 {&hf_key_expr_id, "Key Expr ID", "zenohc.key_expr.id", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL},
+{&hf_query_id, "Query ID", "zenohc.query_id", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL},
 {&hf_interest, "Interest ID", "zenohc.interest_id", FT_UINT32, BASE_DEC, NULL, 0, NULL, HFILL},
 {&hf_sub_id, "Subscription ID", "zenohc.sub_id", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL},
 {&hf_token_id, "Token ID", "zenohc.token_id", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL},
+{&hf_timestamp, "Timestamp", "zenohc.timestamp", FT_ABSOLUTE_TIME, ABSOLUTE_TIME_LOCAL, NULL, 0, NULL, HFILL},
+{&hf_timestamp_hlc, "Timestamp HLC ID", "zenohc.timestamp.hlc", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL},
+{&hf_encoding_id, "Encoding ID", "zenohc.encoding.id", FT_UINT8, BASE_DEC, NULL, 0xFE, NULL, HFILL},
+{&hf_encoding_schema, "Encoding Schema", "zenohc.encoding.schema", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL},
+{&hf_put_payload, "Payload", "zenohc.put.payload", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL},
+{&hf_query_payload, "Parameters", "zenohc.query.payload", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL},
+  {&hf_consolidation, "Consolidation", "zenohc.query.consolidation", FT_UINT8, BASE_DEC, VALS(zh_consolidation_names), 0, NULL, HFILL},
 };
 
 static int dissect_declare_keyexpr(tvbuff_t *tvb, packet_info *pinfo,
@@ -148,7 +179,7 @@ static int dissect_declare_keyexpr(tvbuff_t *tvb, packet_info *pinfo,
     register_key_expr(pinfo, expr_id, res);
 
   if (has_exts)
-    offset = dissect_exts(tvb, pinfo, tree, offset, NULL);
+    offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
 
   return offset;
 }
@@ -164,7 +195,7 @@ static int dissect_declare_subscriber(tvbuff_t *tvb, packet_info *pinfo, proto_t
   offset = dissect_key_expr(tvb, pinfo, tree, offset, has_named, has_mapping, NULL);
 
   if (has_exts)
-    offset = dissect_exts(tvb, pinfo, tree, offset, NULL);
+    offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
 
   return offset;
 }
@@ -181,7 +212,7 @@ static int dissect_declare_token(tvbuff_t *tvb, packet_info *pinfo, proto_tree *
   offset = dissect_key_expr(tvb, pinfo, tree, offset, has_named, has_mapping, &res);
 
   if (has_exts)
-    offset = dissect_exts(tvb, pinfo, tree, offset, NULL);
+    offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
 
   return offset;
 }
@@ -199,7 +230,7 @@ static int dissect_declare_queryable(tvbuff_t *tvb, packet_info *pinfo, proto_tr
                             NULL);
 
   if (has_exts)
-    offset = dissect_exts(tvb, pinfo, tree, offset, NULL);
+    offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
 
   return offset;
 }
@@ -214,7 +245,7 @@ static int dissect_declare(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
     offset = dissect_zint(tvb, tree, offset, hf_interest, NULL, NULL);
 
   if (has_exts)
-    offset = dissect_exts(tvb, pinfo, tree, offset, NULL);
+    offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
 
   const uint8_t decl_header = tvb_get_uint8(tvb, offset);
   const uint8_t decl_type = decl_header & 0x1f;
@@ -232,6 +263,109 @@ static int dissect_declare(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
   }
 }
 
+void dissect_attachment(tvbuff_t * tvb, packet_info *pinfo, proto_tree * tree, int offset, int length, void *data) {
+  // Try to dissect rmw_zenoh style attachement: strings + U64.
+  const int all_start = offset;
+  const int end = offset + length;
+  proto_tree *subtree = NULL;
+  while (offset < end) {
+    const int start = offset;
+    int str_len = (int)read_zint(tvb, &offset);
+
+    if (offset + str_len > end)
+      return;
+
+    char *key = wmem_alloc(pinfo->pool, str_len + 1);
+    tvb_memcpy(tvb, key, offset, str_len);
+    key[str_len] = '\0';
+    offset += str_len;
+
+    if (!subtree)
+      subtree = proto_tree_add_subtree(tree, tvb, all_start, length, ett_zenoh, NULL, "Attachments");
+
+    if (strcmp(key, "sequence_number") == 0 || strcmp(key, "source_timestamp") == 0) {
+      uint64_t value = tvb_get_uint64(tvb, offset, ENC_LITTLE_ENDIAN);
+      offset += 8;
+
+      proto_tree_add_subtree_format(subtree, tvb, start, offset - start, ett_zenoh, NULL, "%s: %lu", key, value);
+    } else {
+      GByteArray *bytes = g_byte_array_new();
+      tvb_get_string_bytes(tvb, offset, end - offset, ENC_SEP_NONE, bytes, NULL);
+      proto_tree_add_subtree_format(subtree, tvb, start, end - start, ett_zenoh, NULL, "%s: %s", key, bytes->data);
+      offset = end;
+      g_byte_array_free(bytes, TRUE);
+    }
+    wmem_free(pinfo->pool, key);
+  }
+}
+
+static struct ext_dissector_table_entry put_exts[] = {
+  {3, &dissect_attachment},
+  {0, NULL},
+};
+
+static int dissect_put(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
+                       int offset, void *data) {
+  const uint8_t msg_header = tvb_get_uint8(tvb, offset);
+  const bool has_timestamp = (msg_header & 0x20) != 0;
+  const bool has_encoding = (msg_header & 0x40) != 0;
+  const bool has_exts = (msg_header & 0x80) != 0;
+
+  ++offset;
+
+  if (has_timestamp) {
+    int start = offset;
+    uint64_t timestamp = read_zint(tvb, &offset);
+    uint64_t timestamp_s = timestamp >> 32;
+    uint64_t timestamp_ns = ((timestamp & 0xFFFFFFFF) * 1000000000ULL) / (1ULL << 32);
+    nstime_t time;
+    time.secs = (time_t)timestamp_s;
+    time.nsecs = (int)timestamp_ns;
+    proto_item *timestamp_item = proto_tree_add_time(tree, hf_timestamp, tvb, start, offset - start, &time);
+    proto_tree *timestamp_tree = proto_item_add_subtree(timestamp_item, ett_zenoh);
+    //offset = dissect_zint(tvb, tree, offset, hf_timestamp_hlc, NULL, NULL);
+    int hlc_len = (int)read_zint(tvb, &offset);
+    proto_tree_add_item(timestamp_tree, hf_timestamp_hlc, tvb, offset, hlc_len, ENC_NA);
+    offset += hlc_len;
+  }
+
+  if (has_encoding) {
+    const uint8_t enc_header = tvb_get_uint8(tvb, offset);
+    const bool has_schema = enc_header & 0x1;
+    const int start = offset;
+    ++offset;
+    int schema_len = 0;
+    if (has_schema) {
+      schema_len = (int)read_zint(tvb, &offset);
+    }
+    proto_item *schema_item;
+    proto_tree *schema_tree = proto_tree_add_subtree(tree, tvb, start, offset - start, ett_zenoh, &schema_item, "Schema ");
+    proto_item_append_text(schema_item, "%u", enc_header >> 1);
+    proto_tree_add_item(schema_tree, hf_encoding_id, tvb, start, 1, ENC_LITTLE_ENDIAN);
+    if (has_schema) {
+      proto_tree_add_item(schema_tree, hf_encoding_schema, tvb, start + 1, schema_len, ENC_NA);
+    }
+  }
+
+  if (has_exts)
+    offset = dissect_exts(tvb, pinfo, tree, offset, put_exts, NULL);
+
+  int payload_len = (int)read_zint(tvb, &offset);
+  proto_tree_add_item(tree, hf_put_payload, tvb, offset, payload_len, ENC_NA);
+  offset += payload_len;
+
+  return offset;
+}
+
+static int dissect_response_body(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
+                        int offset, void *data) {
+  const uint8_t body_header = tvb_get_uint8(tvb, offset);
+  switch (body_header & 0x1f) {
+  case ZENOH_PUSH_PUT: return dissect_put(tvb, pinfo, tree, offset, data);
+  default: return (int)tvb_reported_length(tvb);
+  }
+}
+
 static int dissect_push(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
                         int offset, void *data) {
   const uint8_t msg_header = tvb_get_uint8(tvb, offset);
@@ -243,9 +377,106 @@ static int dissect_push(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
                             NULL);
 
   if (has_exts)
-    offset = dissect_exts(tvb, pinfo, tree, offset, NULL);
+    offset = dissect_exts(tvb, pinfo, tree, offset, default_ext_dissector_table, NULL);
 
-  return (int)tvb_reported_length(tvb);
+  return dissect_response_body(tvb, pinfo, tree, offset, data);
+}
+
+static int dissect_query(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
+                           int offset, void *data) {
+  const uint8_t msg_header = tvb_get_uint8(tvb, offset);
+  const bool has_consolidation = (msg_header & 0x20) != 0;
+  const bool has_parameters = (msg_header & 0x40) != 0;
+  const bool has_exts = (msg_header & 0x80) != 0;
+
+  ++offset;
+  if (has_consolidation) {
+    const int start = offset;
+    uint8_t consolidation = (uint8_t)read_zint(tvb, &offset);
+    proto_tree_add_uint(tree, hf_consolidation, tvb, start, offset - start, consolidation);
+  }
+
+  if (has_parameters) {
+    int payload_len = (int)read_zint(tvb, &offset);
+    proto_tree_add_item(tree, hf_query_payload, tvb, offset, payload_len, ENC_NA);
+    offset += payload_len;
+  }
+
+  if (has_exts)
+    offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
+
+  return offset;
+}
+
+static int dissect_request(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
+                           int offset, void *data) {
+  const uint8_t msg_header = tvb_get_uint8(tvb, offset);
+  const bool has_suffix = (msg_header & 0x20) != 0;
+  const bool mapping = (msg_header & 0x40) != 0;
+  const bool has_exts = (msg_header & 0x80) != 0;
+
+  // TODO Link query and reply
+  offset = dissect_zint(tvb, tree, offset + 1, hf_query_id, NULL, NULL);
+  offset = dissect_key_expr(tvb, pinfo, tree, offset, has_suffix, mapping,
+                            NULL);
+
+  if (has_exts)
+    offset = dissect_exts(tvb, pinfo, tree, offset, default_ext_dissector_table, NULL);
+
+  return dissect_query(tvb, pinfo, tree, offset, data);
+}
+
+static int dissect_reply(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
+                           int offset, void *data) {
+  const uint8_t msg_header = tvb_get_uint8(tvb, offset);
+  const bool has_consolidation = (msg_header & 0x20) != 0;
+  const bool has_exts = (msg_header & 0x80) != 0;
+
+  ++offset;
+  if (has_consolidation) {
+    const int start = offset;
+    uint8_t consolidation = (uint8_t)read_zint(tvb, &offset);
+    proto_tree_add_uint(tree, hf_consolidation, tvb, start, offset - start, consolidation);
+  }
+
+  if (has_exts)
+    offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
+
+  return dissect_response_body(tvb, pinfo, tree, offset, data);
+}
+
+static int dissect_response(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
+                           int offset, void *data) {
+  const uint8_t msg_header = tvb_get_uint8(tvb, offset);
+  const bool has_suffix = (msg_header & 0x20) != 0;
+  const bool mapping = (msg_header & 0x40) != 0;
+  const bool has_exts = (msg_header & 0x80) != 0;
+
+  offset = dissect_zint(tvb, tree, offset + 1, hf_query_id, NULL, NULL);
+  offset = dissect_key_expr(tvb, pinfo, tree, offset, has_suffix, mapping,
+                            NULL);
+
+  if (has_exts)
+    offset = dissect_exts(tvb, pinfo, tree, offset, default_ext_dissector_table, NULL);
+
+
+  const uint8_t payload_header = tvb_get_uint8(tvb, offset);
+  switch (payload_header & 0x1F) {
+  case 4: return dissect_reply(tvb, pinfo, tree, offset, data);
+  default: return tvb_reported_length(tvb);
+  }
+}
+
+static int dissect_response_final(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, void *data) {
+  const uint8_t msg_header = tvb_get_uint8(tvb, offset);
+  const bool has_exts = (msg_header & 0x80) != 0;
+
+  offset = dissect_zint(tvb, tree, offset + 1, hf_query_id, NULL, NULL);
+
+  if (has_exts)
+    offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
+
+  return offset;
 }
 
 static int dissect_net_message(tvbuff_t *tvb, packet_info *pinfo,
@@ -263,6 +494,9 @@ static int dissect_net_message(tvbuff_t *tvb, packet_info *pinfo,
   switch (msg_type) {
   case ZENOH_NET_DECLARE: offset = dissect_declare(tvb, pinfo, subtree, offset, data); break;
   case ZENOH_NET_PUSH: offset = dissect_push(tvb, pinfo, subtree, offset, data); break;
+  case ZENOH_NET_REQUEST: offset = dissect_request(tvb, pinfo, subtree, offset, data); break;
+  case ZENOH_NET_RESPONSE: offset = dissect_response(tvb, pinfo, subtree, offset, data); break;
+  case ZENOH_NET_RESPONSE_FINAL: offset = dissect_response_final(tvb, pinfo, subtree, offset, data); break;
   default: return (int)tvb_reported_length(tvb);
   }
 
@@ -280,7 +514,7 @@ static int dissect_transport_frame(tvbuff_t *tvb, packet_info *pinfo,
   int offset = dissect_zint(tvb, tree, 1, hf_sn, NULL, NULL);
 
   if (has_exts)
-    offset = dissect_exts(tvb, pinfo, tree, offset, NULL);
+    offset = dissect_exts(tvb, pinfo, tree, offset, default_ext_dissector_table, NULL);
 
   int tvb_len = (int)tvb_reported_length(tvb);
   while (offset + 1 < tvb_len) {
@@ -291,12 +525,22 @@ static int dissect_transport_frame(tvbuff_t *tvb, packet_info *pinfo,
   return offset;
 }
 
-static void dissect_open_compression(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, int length) {
+struct zenoh_open_data {
+  bool is_ack;
+};
+
+static void dissect_open_compression(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, int length, void *data) {
   proto_tree_add_item(tree, hf_ext_compression, tvb, offset, 1, ENC_NA);
+  const struct zenoh_open_data *open_data = (const struct zenoh_open_data*)data;
+  if (open_data->is_ack) {
+    struct net_conv_data_t *conv_data = get_net_conv_data(pinfo);
+    if (conv_data)
+      conv_data->compression_start = pinfo->num;
+  }
 }
 
 static struct ext_dissector_table_entry transport_open_exts[] = {
-  {4, &dissect_open_compression},
+  {6, &dissect_open_compression},
   {0, NULL},
 };
 
@@ -321,11 +565,40 @@ static int dissect_transport_open(tvbuff_t *tvb, packet_info *pinfo,
     offset += cookie_length;
   }
 
+  struct zenoh_open_data open_data;
+  open_data.is_ack = is_ack;
+
   if (has_exts)
-    offset = dissect_exts(tvb, pinfo, tree, offset, transport_open_exts);
+    offset = dissect_exts(tvb, pinfo, tree, offset, transport_open_exts, &open_data);
+
+  if (is_ack) {
+    struct net_conv_data_t *conv_data = get_net_conv_data(pinfo);
+    if (conv_data->compression_negotiated)
+      conv_data->compression_start = pinfo->num;
+  }
 
   return offset;
 }
+
+struct zenoh_init_data {
+  bool is_ack;
+};
+
+static void dissect_init_compression(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, int length, void *data) {
+  proto_tree_add_item(tree, hf_ext_compression, tvb, offset, 1, ENC_NA);
+  const struct zenoh_init_data *init_data = data;
+  if (init_data->is_ack) {
+    struct net_conv_data_t *conv_data = get_net_conv_data(pinfo);
+    // printf("Compression negotiated in %u (conv data is %p)\n", pinfo->num, conv_data);
+    if (conv_data)
+      conv_data->compression_negotiated = true;
+  }
+}
+
+static struct ext_dissector_table_entry transport_init_exts[] = {
+  {6, &dissect_init_compression},
+  {0, NULL},
+};
 
 static int dissect_transport_init(tvbuff_t *tvb, packet_info *pinfo,
                                   proto_tree *tree, void *data) {
@@ -357,12 +630,15 @@ static int dissect_transport_init(tvbuff_t *tvb, packet_info *pinfo,
   }
 
   if (is_ack) {
-//  TODO
+    int cookie_length = (int)read_zint(tvb, &offset);
+    proto_tree_add_item(tree, hf_cookie, tvb, offset, cookie_length, ENC_NA);
+    offset += cookie_length;
   }
 
-  // TODO Remove !is_ack
-  if (!is_ack && has_exts) {
-    offset = dissect_exts(tvb, pinfo, tree, offset, NULL);
+  if (has_exts) {
+    struct zenoh_init_data init_data;
+    init_data.is_ack = is_ack;
+    offset = dissect_exts(tvb, pinfo, tree, offset, transport_init_exts, &init_data);
   }
 
   return offset;
@@ -387,8 +663,33 @@ static int dissect_transport_msg(tvbuff_t *tvb, packet_info *pinfo,
   }
 }
 
+static int dissect_zenoh_pdu(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data) {
+  const int tvb_len = (int)tvb_reported_length(tvb);
+
+  const struct net_conv_data_t *conv_data = get_net_conv_data(pinfo);
+  if (conv_data->compression_start < pinfo->num) {
+    uint8_t compression_header = tvb_get_uint8(tvb, 0);
+    if (compression_header == 1) {
+      tvbuff_t *uncompressed = zenoh_tvb_uncompress_lz4(tvb, 1, tvb_len - 1);
+      if (!uncompressed) {
+        col_add_str(pinfo->cinfo, COL_INFO, " Could not uncompress");
+        return tvb_len;
+      }
+
+      tvb_set_child_real_data_tvbuff(tvb, uncompressed);
+      add_new_data_source(pinfo, uncompressed, "LZ4 Uncompressed");
+      return dissect_transport_msg(uncompressed, pinfo, tree, data);
+    } else {
+      tvbuff_t *subset = tvb_new_subset_length(tvb, 1, tvb_len - 1);
+      return dissect_transport_msg(subset, pinfo, tree, data);
+    }
+  }
+
+  return dissect_transport_msg(tvb, pinfo, tree, data);
+}
+
 static int
-dissect_zenoh_pdu(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data) {
+dissect_zenoh_pdu_stream(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data) {
   unsigned reported_length = tvb_reported_length(tvb);
   if (reported_length < 2)
     return (int)reported_length - 2;
@@ -397,7 +698,7 @@ dissect_zenoh_pdu(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *dat
     return (int)reported_length - 2 - (int)pdu_length;
 
   tvbuff_t *subset = tvb_new_subset_length(tvb, 2, (int)pdu_length);
-  return dissect_transport_msg(subset, pinfo, tree, data);
+  return dissect_zenoh_pdu(subset, pinfo, tree, data);
 }
 
 static unsigned zenoh_get_pdu_length(packet_info *pinfo, tvbuff_t *tvb, int offset, void *data) {
@@ -419,7 +720,7 @@ dissect_zenoh(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
   int tvb_len = (int)tvb_reported_length(tvb);
   if (pinfo->can_desegment > 0) {
     if (pinfo->ptype == PT_TCP) {
-      tcp_dissect_pdus(tvb, pinfo, tree, true, 2, &zenoh_get_pdu_length, &dissect_zenoh_pdu, data);
+      tcp_dissect_pdus(tvb, pinfo, tree, true, 2, &zenoh_get_pdu_length, &dissect_zenoh_pdu_stream, data);
       return (int)tvb_reported_length(tvb);
     }
 
@@ -456,7 +757,7 @@ dissect_zenoh(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
     return offset;
   }
 
-  return dissect_transport_msg(tvb, pinfo, tree, data);
+  return dissect_zenoh_pdu(tvb, pinfo, tree, data);
 }
 
 static void proto_register_zenoh(void)

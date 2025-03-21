@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(LCDissectors LANGUAGES C)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LZ4 REQUIRED IMPORTED_TARGET liblz4)
 find_package(Wireshark REQUIRED)
 
 add_library(zenoh MODULE
@@ -12,9 +14,11 @@ add_library(zenoh MODULE
     src/fields.h
     src/key_exprs.c
     src/key_exprs.h
+    src/lz4.c
+    src/lz4.h
     src/utils.c
     src/utils.h)
-target_link_libraries(zenoh PRIVATE epan)
+target_link_libraries(zenoh PRIVATE epan PkgConfig::LZ4)
 set_target_properties(zenoh
     PROPERTIES
     C_VISIBILITY_PRESET hidden
