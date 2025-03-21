@@ -131,6 +131,9 @@ static int hf_linkstate_zid;
 static int hf_linkstate_wai;
 static int hf_linkstate_locator;
 static int hf_linkstate_link;
+static int hf_rmw_zenoh_sequence_number;
+static int hf_rmw_zenoh_timestamp;
+static int hf_rmw_zenoh_source_gid;
 int ett_zenoh;
 
 static hf_register_info hf[] = {
@@ -195,6 +198,9 @@ static hf_register_info hf[] = {
 {&hf_linkstate_wai, "What Am I", "zenohc.linkstate.wai", FT_UINT8, BASE_DEC, VALS(zh_what_am_i_flags_names), 0, NULL, HFILL},
 {&hf_linkstate_locator, "Locator", "zenohc.linkstate.locator", FT_STRING, BASE_NONE, NULL, 0, NULL, HFILL},
 {&hf_linkstate_link, "Link", "zenohc.linkstate.link", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL},
+{&hf_rmw_zenoh_sequence_number, "Sequence number", "zenohc.rmw_zenoh.sn", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL},
+{&hf_rmw_zenoh_timestamp, "Timestamp", "zenohc.rmw_zenoh.timestamp", FT_ABSOLUTE_TIME, ABSOLUTE_TIME_LOCAL, NULL, 0, NULL, HFILL},
+{&hf_rmw_zenoh_source_gid, "Source GID", "zenohc.rmw_zenoh.source_gid", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL},
 };
 
 static int dissect_declare_keyexpr(tvbuff_t *tvb, packet_info *pinfo,
@@ -316,17 +322,21 @@ void dissect_attachment(tvbuff_t * tvb, packet_info *pinfo, proto_tree * tree, i
     if (!subtree)
       subtree = proto_tree_add_subtree(tree, tvb, all_start, length, ett_zenoh, NULL, "Attachments");
 
-    if (strcmp(key, "sequence_number") == 0 || strcmp(key, "source_timestamp") == 0) {
-      uint64_t value = tvb_get_uint64(tvb, offset, ENC_LITTLE_ENDIAN);
+    if (strcmp(key, "sequence_number") == 0) {
+      proto_tree_add_item(subtree, hf_rmw_zenoh_sequence_number, tvb, offset, 8, ENC_LITTLE_ENDIAN);
       offset += 8;
-
-      proto_tree_add_subtree_format(subtree, tvb, start, offset - start, ett_zenoh, NULL, "%s: %lu", key, value);
-    } else {
-      GByteArray *bytes = g_byte_array_new();
-      tvb_get_string_bytes(tvb, offset, end - offset, ENC_SEP_NONE, bytes, NULL);
-      proto_tree_add_subtree_format(subtree, tvb, start, end - start, ett_zenoh, NULL, "%s: %s", key, bytes->data);
+    } else if (strcmp(key, "source_timestamp") == 0) {
+      const uint64_t value = tvb_get_uint64(tvb, offset, ENC_LITTLE_ENDIAN);
+      nstime_t time;
+      time.secs = (time_t)(value / 1000000000);
+      time.nsecs = (int)(value % 1000000000);
+      proto_tree_add_time(subtree, hf_rmw_zenoh_timestamp, tvb, offset, 8, &time);
+      offset += 8;
+    } else if (strcmp(key, "source_gid") == 0) {
+      proto_tree_add_item(subtree, hf_rmw_zenoh_source_gid, tvb, offset, end - offset, ENC_NA);
       offset = end;
-      g_byte_array_free(bytes, TRUE);
+    } else {
+      offset = end;
     }
     wmem_free(pinfo->pool, key);
   }
@@ -597,6 +607,7 @@ static int dissect_net_message(tvbuff_t *tvb, packet_info *pinfo,
   case ZENOH_NET_OAM: hfindex = hf_net_oam; break;
   }
   proto_item *subtree_item = proto_tree_add_item(tree, hfindex, tvb, offset, 1, ENC_NA);
+  proto_item_set_text(subtree_item, type_str ? type_str : "Unknown");
   proto_tree *subtree = proto_item_add_subtree(subtree_item, ett_zenoh);
 
   if (type_str == NULL)
