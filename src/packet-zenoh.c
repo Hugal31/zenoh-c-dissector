@@ -1,5 +1,6 @@
 #include <epan/packet.h>
 #include <epan/dissectors/packet-tcp.h>
+#include <wireshark/ws_version.h>
 
 #include "conv.h"
 #include "exts.h"
@@ -9,8 +10,8 @@
 #include "utils.h"
 
 WS_DLL_PUBLIC_DEF char const *plugin_version = "0.1.0";
-WS_DLL_PUBLIC_DEF int plugin_want_major = 4;
-WS_DLL_PUBLIC_DEF int plugin_want_minor = 4;
+WS_DLL_PUBLIC_DEF int plugin_want_major = WIRESHARK_VERSION_MAJOR;
+WS_DLL_PUBLIC_DEF int plugin_want_minor = WIRESHARK_VERSION_MINOR;
 
 int proto_zenoh;
 static dissector_handle_t zenoh_handle;
@@ -70,6 +71,14 @@ VALUE_STRING_ENUM(zh_push_body_names);
 
 VALUE_STRING_ARRAY(zh_what_am_i_names);
 
+#define zh_what_am_i_flags_names_VALUE_STRING_LIST(V)                          \
+  V( ZENOH_F_ROUTER, 0b001, "Router" )                                             \
+  V( ZENOH_F_PEER, 0b010, "Peer" )                                                 \
+  V( ZENOH_F_CLIENT, 0b100, "Client" ) \
+  V( ZENOH_F_ROUTER, 0b011, "Router|Peer" )
+
+VALUE_STRING_ARRAY(zh_what_am_i_flags_names);
+
 #define zh_consolidation_names_VALUE_STRING_LIST(V) \
   V( ZENOH_CONSOLIDATION_AUTO, 0, "Auto" ) \
   V( ZENOH_CONSOLIDATION_NONE, 1, "None" ) \
@@ -110,6 +119,18 @@ static int hf_encoding_schema;
 static int hf_put_payload;
 static int hf_query_payload;
 static int hf_consolidation;
+static int hf_keep_alive;
+static int hf_net_oam;
+static int hf_net_oam_id;
+static int hf_net_oam_data;
+static int hf_net_oam_payload;
+static int hf_linkstate;
+static int hf_linkstate_psid;
+static int hf_linkstate_sn;
+static int hf_linkstate_zid;
+static int hf_linkstate_wai;
+static int hf_linkstate_locator;
+static int hf_linkstate_link;
 int ett_zenoh;
 
 static hf_register_info hf[] = {
@@ -162,6 +183,18 @@ static hf_register_info hf[] = {
 {&hf_put_payload, "Payload", "zenohc.put.payload", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL},
 {&hf_query_payload, "Parameters", "zenohc.query.payload", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL},
   {&hf_consolidation, "Consolidation", "zenohc.query.consolidation", FT_UINT8, BASE_DEC, VALS(zh_consolidation_names), 0, NULL, HFILL},
+  {&hf_keep_alive, "KeepAlive", "zenohc.keep_alive", FT_NONE, BASE_NONE, NULL, 0, NULL, HFILL},
+{&hf_net_oam, "OAM", "zenohc.net.oam", FT_NONE, BASE_NONE, NULL, 0, NULL, HFILL},
+{&hf_net_oam_id, "OAM ID", "zenohc.net.oam.id", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL},
+{&hf_net_oam_data, "OAM Data", "zenohc.net.oam.data", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL},
+{&hf_net_oam_payload, "OAM Payload", "zenohc.net.oam.payload", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL},
+{&hf_linkstate, "Linkstate", "zenohc.linkstate", FT_NONE, BASE_NONE, NULL, 0, NULL, HFILL},
+{&hf_linkstate_psid, "Linkstate PSID", "zenohc.linkstate.psid", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL},
+{&hf_linkstate_sn, "Linkstate SN", "zenohc.linkstate.sn", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL},
+{&hf_linkstate_zid, "ZID", "zenohc.linkstate.zid", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL},
+{&hf_linkstate_wai, "What Am I", "zenohc.linkstate.wai", FT_UINT8, BASE_DEC, VALS(zh_what_am_i_flags_names), 0, NULL, HFILL},
+{&hf_linkstate_locator, "Locator", "zenohc.linkstate.locator", FT_STRING, BASE_NONE, NULL, 0, NULL, HFILL},
+{&hf_linkstate_link, "Link", "zenohc.linkstate.link", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL},
 };
 
 static int dissect_declare_keyexpr(tvbuff_t *tvb, packet_info *pinfo,
@@ -479,13 +512,93 @@ static int dissect_response_final(tvbuff_t *tvb, packet_info *pinfo, proto_tree 
   return offset;
 }
 
+static int dissect_linkstate(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, void *data) {
+  const uint8_t header = tvb_get_uint8(tvb, offset);
+  const bool has_zid = header & 0b001;
+  const bool has_what_am_i = header & 0b010;
+  const bool has_locator = header & 0b100;
+
+  offset = dissect_zint(tvb, tree, offset + 1, hf_linkstate_psid, NULL, NULL);
+  offset = dissect_zint(tvb, tree, offset, hf_linkstate_sn, NULL, NULL);
+  if (has_zid) {
+    int zid_length = (int)read_zint(tvb, &offset);
+    offset = dissect_zid(tvb, tree, hf_linkstate_zid, offset, zid_length, NULL);
+  }
+
+  if (has_what_am_i)
+    proto_tree_add_item(tree, hf_linkstate_wai, tvb, offset++, 1, ENC_LITTLE_ENDIAN);
+
+  if (has_locator) {
+    uint64_t nlocators = read_zint(tvb, &offset);
+    for (uint64_t i = 0; i < nlocators; ++i) {
+      int locator_length = (int)read_zint(tvb, &offset);
+      proto_tree_add_item(tree, hf_linkstate_locator, tvb, offset, locator_length, ENC_ASCII);
+      offset += locator_length;
+    }
+  }
+
+  const uint64_t n_links = read_zint(tvb, &offset);
+  for (uint64_t i = 0; i < n_links; ++i) {
+    offset = dissect_zint(tvb, tree, offset, hf_linkstate_link, NULL, NULL);
+  }
+  return offset;
+}
+
+static int dissect_linkstate_list(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, void *data) {
+  const uint64_t n_linkstates = read_zint(tvb, &offset);
+  const int tvb_len = (int)tvb_reported_length(tvb);
+  for (uint64_t i = 0; i < n_linkstates; ++i && offset + 1 < tvb_len) {
+    proto_item *linkstate_item = proto_tree_add_item(tree, hf_linkstate, tvb, offset, -1, ENC_NA);
+    proto_tree *linkstate_tree = proto_item_add_subtree(linkstate_item, ett_zenoh);
+    offset = dissect_linkstate(tvb, pinfo, linkstate_tree, offset, NULL);
+    proto_item_set_end(linkstate_item, tvb, offset);
+  }
+  return offset;
+}
+
+static int dissect_net_oam(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, void *data) {
+  const uint8_t msg_header = tvb_get_uint8(tvb, offset);
+  const uint8_t encoding = (msg_header >> 5) & 0b11;
+  const bool has_exts = msg_header & 0x80;
+
+  uint64_t id;
+  offset = dissect_zint(tvb, tree, offset + 1, hf_net_oam_id, NULL, &id);
+
+  if (has_exts)
+    offset = dissect_exts(tvb, pinfo, tree, offset, default_ext_dissector_table, NULL);
+
+  switch (encoding) {
+  default:
+  case 0: break;
+  case 0b01:
+    offset = dissect_zint(tvb, tree, offset, hf_net_oam_data, NULL, NULL);
+    break;
+
+  case 0b10: {
+    int payload_length = (int)read_zint(tvb, &offset);
+    proto_item *payload_item = proto_tree_add_item(tree, hf_net_oam_payload, tvb, offset, payload_length, ENC_NA);
+    if (id == 1)
+      dissect_linkstate_list(tvb, pinfo, proto_item_add_subtree(payload_item, ett_zenoh), offset, data);
+    offset += payload_length;
+  }
+  }
+
+  return offset;
+}
+
 static int dissect_net_message(tvbuff_t *tvb, packet_info *pinfo,
                                proto_tree *tree, int offset, void *data) {
   const uint8_t msg_header = tvb_get_uint8(tvb, offset);
   const uint8_t msg_type = msg_header & 0x1F;
   char const *type_str = try_val_to_str(msg_type, zh_net_msg_type_names);
-  proto_item *subtree_item;
-  proto_tree *subtree = proto_tree_add_subtree(tree, tvb, offset, 1, ett_zenoh, &subtree_item, type_str ? type_str : "Unknown");
+  int hfindex;
+  switch (msg_type) {
+  default: hfindex = hf_text_only; break;
+  case ZENOH_NET_OAM: hfindex = hf_net_oam; break;
+  }
+  proto_item *subtree_item = proto_tree_add_item(tree, hfindex, tvb, offset, 1, ENC_NA);
+  proto_tree *subtree = proto_item_add_subtree(subtree_item, ett_zenoh);
+
   if (type_str == NULL)
     proto_item_append_text(subtree_item, " (%u)", msg_type);
 
@@ -497,6 +610,7 @@ static int dissect_net_message(tvbuff_t *tvb, packet_info *pinfo,
   case ZENOH_NET_REQUEST: offset = dissect_request(tvb, pinfo, subtree, offset, data); break;
   case ZENOH_NET_RESPONSE: offset = dissect_response(tvb, pinfo, subtree, offset, data); break;
   case ZENOH_NET_RESPONSE_FINAL: offset = dissect_response_final(tvb, pinfo, subtree, offset, data); break;
+  case ZENOH_NET_OAM: offset = dissect_net_oam(tvb, pinfo, subtree, offset, data); break;
   default: return (int)tvb_reported_length(tvb);
   }
 
@@ -612,13 +726,8 @@ static int dissect_transport_init(tvbuff_t *tvb, packet_info *pinfo,
   proto_tree_add_item(tree, hf_what_am_i, tvb, 2, 1, ENC_LITTLE_ENDIAN);
 
   const uint8_t zid_len = 1 + (tvb_get_uint8(tvb, 2) >> 4);
-  proto_item *zid_item = proto_tree_add_item(tree, hf_zid, tvb, 3, zid_len, ENC_NA);
-  proto_item_set_text(zid_item, "ZID: ");
   char zid_buff[2 * MAX_ZID_SIZE + 1];
-  for (int i = 0; i < zid_len; ++i) {
-    snprintf(zid_buff + (2 * i), 3, "%02x", (unsigned)tvb_get_uint8(tvb, 3 + zid_len - 1 - i));
-  }
-  proto_item_append_text(zid_item, "%s", zid_buff);
+  dissect_zid(tvb, tree, hf_zid, 3, zid_len, zid_buff);
   register_zid(pinfo, zid_buff);
 
   int offset = 3 + zid_len;
@@ -644,6 +753,20 @@ static int dissect_transport_init(tvbuff_t *tvb, packet_info *pinfo,
   return offset;
 }
 
+static int dissect_transport_keep_alive(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data) {
+  col_append_str(pinfo->cinfo, COL_INFO, ", KeepAlive");
+  uint8_t msg_header = tvb_get_uint8(tvb, 0);
+  bool has_exts = msg_header & 0x80;
+
+  int offset = 1;
+  if (has_exts)
+    offset = dissect_exts(tvb, pinfo, tree, offset, NULL, data);
+
+  proto_tree_add_item(tree, hf_keep_alive, tvb, 0, offset, ENC_NA);
+
+  return offset;
+}
+
 static int dissect_transport_msg(tvbuff_t *tvb, packet_info *pinfo,
                                  proto_tree *tree, void *data) {
   proto_item *ti = proto_tree_add_item(tree, proto_zenoh, tvb, 0, -1, ENC_NA);
@@ -659,6 +782,8 @@ static int dissect_transport_msg(tvbuff_t *tvb, packet_info *pinfo,
     return dissect_transport_open(tvb, pinfo, proto_tree, data);
   case ZENOH_TRANSPORT_FRAME:
     return dissect_transport_frame(tvb, pinfo, proto_tree, data);
+  case ZENOH_TRANSPORT_KEEP_ALIVE:
+    return dissect_transport_keep_alive(tvb, pinfo, proto_tree, data);
   default: return (int)tvb_reported_length(tvb);
   }
 }
