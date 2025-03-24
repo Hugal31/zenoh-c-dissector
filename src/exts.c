@@ -5,13 +5,11 @@
 #include "fields.h"
 #include "utils.h"
 
-static ext_dissector_t try_get_dissector(ext_dissector_table_t dissector_table, uint8_t id)
+static struct ext_dissector_table_entry *try_get_dissector_entry(ext_dissector_table_t dissector_table, uint8_t id)
 {
     while (dissector_table->id != 0 && dissector_table->id != id)
-    {
         ++dissector_table;
-    }
-    return dissector_table->dissector;
+    return dissector_table;
 }
 
 static int dissect_ext(tvbuff_t *tvb,
@@ -50,27 +48,41 @@ static int dissect_ext(tvbuff_t *tvb,
     }
     const int length = offset - start;
 
-    ext_dissector_t ext_dissector = dissector_table ? try_get_dissector(dissector_table, id) : NULL;
-    if (ext_dissector)
+    const struct ext_dissector_table_entry *dissector_entry =
+            dissector_table ? try_get_dissector_entry(dissector_table, id) : NULL;
+    const char *const dissector_name = dissector_entry ? dissector_entry->name : NULL;
+    if (dissector_entry && dissector_entry->dissector)
     {
-        ext_dissector(tvb, pinfo, tree, start, length, data);
+        dissector_entry->dissector(tvb, pinfo, tree, start, length, data);
     }
     else
     {
         if (enc == 0)
         {
-            proto_item_prepend_text(proto_tree_add_item(tree, hf_ext_unit, tvb, start, length, ENC_NA), "Ext (%u", id);
+            proto_item *item = proto_tree_add_item(tree, hf_ext_unit, tvb, start, length, ENC_NA);
+            if (dissector_name)
+                proto_item_set_text(item, "%s", dissector_name);
+            else
+                proto_item_set_text(item, "Unit Ext (%u)", id);
         }
         else if (enc == 1)
         {
             proto_item *item;
-            dissect_zint(tvb, tree, start, hf_ext_z64, &item, NULL);
-            proto_item_prepend_text(item, "Ext (%u", id);
+            uint64_t value;
+            dissect_zint(tvb, tree, start, hf_ext_z64, &item, &value);
+            if (dissector_name)
+                proto_item_set_text(item, "%s: %lu", dissector_name, value);
+            else
+                proto_item_set_text(item, "Z64 Ext (%u): %lu", id, value);
         }
         else
         {
-            proto_item *item = proto_tree_add_item(tree, hf_ext_zbuf, tvb, start, length, ENC_NA);
-            proto_item_prepend_text(item, "Ext (%u", id);
+            char *display;
+            proto_item *item = proto_tree_add_item_ret_display_string(
+                    tree, hf_ext_zbuf, tvb, start, length, ENC_NA, pinfo->pool, &display);
+            if (display)
+                proto_item_set_text(item, "%s: %s", dissector_name ? dissector_name : "ZBuf Ext", display);
+            wmem_free(pinfo->pool, display);
         }
     }
 
@@ -179,6 +191,6 @@ void dissect_qos_type(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *tree, i
 }
 
 struct ext_dissector_table_entry default_ext_dissector_table[2] = {
-        {1, dissect_qos_type},
-        {0, NULL},
+        {1, "QosType", dissect_qos_type},
+        {0, NULL, NULL},
 };

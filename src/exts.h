@@ -7,6 +7,8 @@ typedef void (*ext_dissector_t)(
 struct ext_dissector_table_entry
 {
     uint8_t id;
+    const char *name;
+    // If non-null, will call it without setting up a proto_item.
     ext_dissector_t dissector;
 };
 typedef struct ext_dissector_table_entry *ext_dissector_table_t;
