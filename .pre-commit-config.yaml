@@ -1,0 +1,21 @@
+default_language_version:
+  python: python3
+default_install_hook_types:
+  - commit-msg
+  - pre-commit
+repos:
+  - repo: git@bitbucket.org:lc_rd/pre-commit-hooks.git
+    rev: v0.5.1
+    hooks:
+      - id: check-lc-karma-commit-msg
+        args:
+          - --color
+          - --reformat
+          - --without-branch-name
+      - id: check-clang-format-does-nothing
+        stages: [commit]
+  - repo: https://github.com/cheshirekow/cmake-format-precommit
+    rev: v0.6.13
+    hooks:
+      - id: cmake-format
+        additional_dependencies: [pyyaml]
