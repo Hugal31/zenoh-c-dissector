@@ -8,7 +8,7 @@
  * length comprlen.  Returns an uncompressed tvbuffer if uncompression
  * succeeded or NULL if uncompression failed.
  */
-#define TVB_LZ4_MIN_BUFSIZ 32768
+#define TVB_LZ4_MIN_BUFSIZ 65536
 #define TVB_LZ4_MAX_BUFSIZ 1048576 * 10
 
 tvbuff_t *zenoh_tvb_uncompress_lz4(tvbuff_t *tvb, const int offset, int comprlen)
@@ -17,6 +17,7 @@ tvbuff_t *zenoh_tvb_uncompress_lz4(tvbuff_t *tvb, const int offset, int comprlen
     char const *input = (char const *)tvb_get_ptr(tvb, offset, comprlen);
     char *output = g_malloc(TVB_LZ4_MIN_BUFSIZ);
     int output_size = TVB_LZ4_MIN_BUFSIZ;
+    // FIXME: This doesn't work if the decompressed output is greater than the output_size...
     int decoded = LZ4_decompress_safe_continue(decoder, input, output, comprlen, output_size);
     int total_decompressed = decoded;
 
