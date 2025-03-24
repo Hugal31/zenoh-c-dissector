@@ -35,7 +35,10 @@ int dissect_key_expr(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
       const size_t len = strlen(prefix) + 1 + strlen(suffix) + 1;
       char *buf = wmem_alloc(allocator, len);
       do_free = true;
-      snprintf(buf, len, "%s/%s", prefix, suffix);
+      if (suffix[0] == '/')
+        snprintf(buf, len, "%s%s", prefix, suffix);
+      else
+        snprintf(buf, len, "%s/%s", prefix, suffix);
       res = buf;
     } else {
       res = prefix;

@@ -86,6 +86,16 @@ VALUE_STRING_ARRAY(zh_what_am_i_flags_names);
   V( ZENOH_CONSOLIDATION_LATEST, 3, "Latest" )
 VALUE_STRING_ARRAY(zh_consolidation_names);
 
+#define zh_close_reasons_names_VALUE_STRING_LIST(V)                            \
+  V( ZENOH_CLOSE_GENERIC, 0, "Generic" )                                         \
+  V( ZENOH_CLOSE_UNSUPPORTED, 1, "Unsupported" )                                 \
+  V( ZENOH_CLOSE_INVALID, 2, "Invalid" )                                         \
+  V( ZENOH_CLOSE_MAX_SESSIONS, 3, "Max sessions" )                               \
+  V( ZENOH_CLOSE_MAX_LINKS, 4, "Max links" )                                     \
+  V( ZENOH_CLOSE_EXPIRED, 5, "Expired" )                                         \
+  V( ZENOH_CLOSE_UNRESPONSIVE, 6, "Unresponsive" )
+VALUE_STRING_ARRAY(zh_close_reasons_names);
+
 // Fields
 static int hf_zenoh_transport_msg_type;
 static int hf_zenoh_net_msg_type;
@@ -138,6 +148,9 @@ static int hf_rmw_zenoh_timestamp;
 static int hf_rmw_zenoh_source_gid;
 static int hf_reply_to_query;
 static int hf_query_to_reply;
+static int hf_fragment_has_more;
+static int hf_close_session;
+static int hf_close_reason;
 int ett_zenoh;
 
 static hf_register_info hf[] = {
@@ -207,8 +220,11 @@ static hf_register_info hf[] = {
 {&hf_rmw_zenoh_sequence_number, "Sequence number", "zenohc.rmw_zenoh.sn", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL},
 {&hf_rmw_zenoh_timestamp, "Timestamp", "zenohc.rmw_zenoh.timestamp", FT_ABSOLUTE_TIME, ABSOLUTE_TIME_LOCAL, NULL, 0, NULL, HFILL},
 {&hf_rmw_zenoh_source_gid, "Source GID", "zenohc.rmw_zenoh.source_gid", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL},
-{&hf_reply_to_query, "Reply in", "zenohc.query.reply_frame", FT_FRAMENUM, BASE_NONE, NULL, 0, NULL, HFILL},
-{&hf_query_to_reply, "Query in", "zenohc.reply.query_frame", FT_FRAMENUM, BASE_NONE, NULL, 0, NULL, HFILL},
+{&hf_reply_to_query, "Reply in", "zenohc.query.reply_frame", FT_FRAMENUM, BASE_NONE, FRAMENUM_TYPE(FT_FRAMENUM_RESPONSE), 0, NULL, HFILL},
+{&hf_query_to_reply, "Query in", "zenohc.reply.query_frame", FT_FRAMENUM, BASE_NONE, FRAMENUM_TYPE(FT_FRAMENUM_REQUEST), 0, NULL, HFILL},
+{&hf_fragment_has_more, "Has more", "zenohc.fragment.has_more", FT_BOOLEAN, 8, NULL, 0x40, NULL, HFILL},
+{&hf_close_session, "Close session", "zenohc.close.session", FT_BOOLEAN, 8, NULL, 0x20, NULL, HFILL},
+{&hf_close_reason, "Close reason", "zenohc.close.reason", FT_UINT8, BASE_DEC, VALS(zh_close_reasons_names), 0, NULL, HFILL},
 };
 
 static int dissect_declare_keyexpr(tvbuff_t *tvb, packet_info *pinfo,
@@ -694,6 +710,37 @@ static int dissect_transport_frame(tvbuff_t *tvb, packet_info *pinfo,
   return offset;
 }
 
+static int dissect_transport_fragment(tvbuff_t *tvb, packet_info *pinfo,
+                                   proto_tree *tree, void *data) {
+  col_append_str(pinfo->cinfo, COL_INFO, ", Fragment");
+  const uint8_t msg_header = tvb_get_uint8(tvb, 0);
+  const bool has_exts = (msg_header & 0x80) != 0;
+  proto_tree_add_item(tree, hf_reliable, tvb, 0, 1, ENC_NA);
+  proto_tree_add_item(tree, hf_fragment_has_more, tvb, 0, 1, ENC_NA);
+
+  int offset = dissect_zint(tvb, tree, 1, hf_sn, NULL, NULL);
+
+  if (has_exts)
+    offset = dissect_exts(tvb, pinfo, tree, offset, default_ext_dissector_table, NULL);
+
+  return (int)tvb_reported_length(tvb);
+}
+
+static int dissect_transport_close(tvbuff_t *tvb, packet_info *pinfo,
+                                   proto_tree *tree, void *data) {
+  col_append_str(pinfo->cinfo, COL_INFO, ", Close");
+  const uint8_t msg_header = tvb_get_uint8(tvb, 0);
+  const bool has_exts = (msg_header & 0x80) != 0;
+  proto_tree_add_item(tree, hf_close_session, tvb, 0, 1, ENC_NA);
+  proto_tree_add_item(tree, hf_close_reason, tvb, 1, 1, ENC_NA);
+
+  int offset = 2;
+  if (has_exts)
+    offset = dissect_exts(tvb, pinfo, tree, offset, default_ext_dissector_table, NULL);
+
+  return offset;
+}
+
 struct zenoh_open_data {
   bool is_ack;
 };
@@ -849,6 +896,10 @@ static int dissect_transport_msg(tvbuff_t *tvb, packet_info *pinfo,
     return dissect_transport_frame(tvb, pinfo, proto_tree, data);
   case ZENOH_TRANSPORT_KEEP_ALIVE:
     return dissect_transport_keep_alive(tvb, pinfo, proto_tree, data);
+  case ZENOH_TRANSPORT_FRAGMENT:
+    return dissect_transport_fragment(tvb, pinfo, proto_tree, data);
+  case ZENOH_TRANSPORT_CLOSE:
+    return dissect_transport_close(tvb, pinfo, proto_tree, data);
   default: return (int)tvb_reported_length(tvb);
   }
 }
