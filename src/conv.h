@@ -3,27 +3,31 @@
 #include <epan/packet.h>
 
 // Query data, stored in the sender side.
-struct zenoh_query_info_t {
-  wmem_list_t *query_packets;
-  wmem_list_t *reply_packets;
+struct zenoh_query_info_t
+{
+    wmem_list_t *query_packets;
+    wmem_list_t *reply_packets;
 };
 
-struct zenoh_conv_data_side_t {
-  wmem_tree_t *expr_id_cache;
-  wmem_tree_t *query_frame_num_cache;
+struct zenoh_conv_data_side_t
+{
+    wmem_tree_t *expr_id_cache;
+    wmem_tree_t *query_frame_num_cache;
 };
 
 /// A conversation between two zenoh nodes.
 /// Can span over multiple network conversations (e.g. TCP, UDP, etc...).
-struct zenoh_conv_data_t {
-  struct zenoh_conv_data_side_t sides[2];
+struct zenoh_conv_data_t
+{
+    struct zenoh_conv_data_side_t sides[2];
 };
 
-struct net_conv_data_t {
-  const char *zids[2];
-  struct zenoh_conv_data_t *zenoh_conv_data;
-  bool compression_negotiated;
-  uint32_t compression_start;
+struct net_conv_data_t
+{
+    const char *zids[2];
+    struct zenoh_conv_data_t *zenoh_conv_data;
+    bool compression_negotiated;
+    uint32_t compression_start;
 };
 
 /// Return 0 or 1, an arbitrary order between the sender and the receiver in
@@ -35,10 +39,8 @@ struct net_conv_data_t *get_net_conv_data(const packet_info *pinfo);
 
 struct zenoh_query_info_t *zenoh_query_info_new(wmem_allocator_t *allocator);
 
-char const *get_key_expr(const packet_info *pinfo, uint64_t scope_id,
-                         bool sender);
-void register_key_expr(const packet_info *pinfo, uint64_t expr_id,
-                       const char *key_expr);
+char const *get_key_expr(const packet_info *pinfo, uint64_t scope_id, bool sender);
+void register_key_expr(const packet_info *pinfo, uint64_t expr_id, const char *key_expr);
 void register_zid(const packet_info *pinfo, const char *zid);
 
 /// \note assumes the sender is the one queyring
