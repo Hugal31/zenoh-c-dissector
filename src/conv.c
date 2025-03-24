@@ -93,10 +93,10 @@ void register_zid(const packet_info *pinfo, const char *zid)
     net_conv_data->zids[low_or_high] = wmem_strdup(wmem_file_scope(), zid);
     if (net_conv_data->zids[!low_or_high] != NULL)
     {
-        const conversation_element_t elements[3] = {{CE_STRING, {.str_val = net_conv_data->zids[0]}},
-                                                    {CE_STRING, {.str_val = net_conv_data->zids[1]}},
-                                                    // Should we register the conv type?
-                                                    {CE_CONVERSATION_TYPE, {.conversation_type_val = proto_zenoh}}};
+        conversation_element_t elements[3] = {{CE_STRING, {.str_val = net_conv_data->zids[0]}},
+                                              {CE_STRING, {.str_val = net_conv_data->zids[1]}},
+                                              // Should we register the conv type?
+                                              {CE_CONVERSATION_TYPE, {.conversation_type_val = proto_zenoh}}};
 
         conversation_t *zenoh_conv = find_conversation_full(pinfo->num, elements);
         if (!zenoh_conv)
@@ -140,8 +140,8 @@ void register_query(const packet_info *pinfo, uint32_t query_id)
     if (!query_packets_list)
         return;
 
-    if (!wmem_list_find(query_packets_list, (void *)pinfo->num))
-        wmem_list_append(query_packets_list, (void *)pinfo->num);
+    if (!wmem_list_find(query_packets_list, (void *)(uint64_t)pinfo->num))
+        wmem_list_append(query_packets_list, (void *)(uint64_t)pinfo->num);
 }
 
 void register_reply(const packet_info *pinfo, uint32_t reply_id)
@@ -150,8 +150,8 @@ void register_reply(const packet_info *pinfo, uint32_t reply_id)
     if (!replies_packets_list)
         return;
 
-    if (!wmem_list_find(replies_packets_list, (void *)pinfo->num))
-        wmem_list_append(replies_packets_list, (void *)pinfo->num);
+    if (!wmem_list_find(replies_packets_list, (void *)(uint64_t)pinfo->num))
+        wmem_list_append(replies_packets_list, (void *)(uint64_t)pinfo->num);
 }
 
 wmem_list_t *get_queries(const packet_info *pinfo, uint32_t query_id, bool sender)
