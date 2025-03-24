@@ -107,7 +107,7 @@ VALUE_STRING_ARRAY(priority_names);
 void dissect_qos_ext(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *tree, int offset, int length, void *data _U_)
 {
     const int start = offset;
-    uint64_t value = read_zint(tvb, &offset);
+    uint64_t value = length ? read_zint(tvb, &offset) : 0;
     proto_item *item;
     proto_tree_add_subtree(tree, tvb, start, length, ett_zenoh, &item, "QoSExt { ");
 

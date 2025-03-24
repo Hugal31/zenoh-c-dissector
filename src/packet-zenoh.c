@@ -38,7 +38,7 @@ VALUE_STRING_ARRAY(zh_transport_msg_type_names);
     V(ZENOH_NET_REQUEST, 0x1C, "Request") \
     V(ZENOH_NET_RESPONSE, 0x1B, "Response") \
     V(ZENOH_NET_RESPONSE_FINAL, 0x1A, "ResponseFinal") \
-    V(ZENOH_NET_INTEREST, 0x19, "Intereset")
+    V(ZENOH_NET_INTEREST, 0x19, "Interest")
 
 VALUE_STRING_ENUM(zh_net_msg_type_names);
 VALUE_STRING_ARRAY(zh_net_msg_type_names);
@@ -86,6 +86,14 @@ VALUE_STRING_ARRAY(zh_what_am_i_flags_names);
     V(ZENOH_CONSOLIDATION_LATEST, 3, "Latest")
 VALUE_STRING_ARRAY(zh_consolidation_names);
 
+#define zh_interest_modes_names_VALUE_STRING_LIST(V) \
+    V(ZENOH_INTEREST_FINAL, 0b00, "Final") \
+V(ZENOH_INTEREST_CURRENT, 0b01, "Current") \
+V(ZENOH_INTEREST_FUTURE, 0b10, "Future") \
+V(ZENOH_INTEREST_CURRENT_FUTURE, 0b11, "Current & Future")
+VALUE_STRING_ENUM(zh_interest_modes_names);
+VALUE_STRING_ARRAY(zh_interest_modes_names);
+
 #define zh_close_reasons_names_VALUE_STRING_LIST(V) \
     V(ZENOH_CLOSE_GENERIC, 0, "Generic") \
     V(ZENOH_CLOSE_UNSUPPORTED, 1, "Unsupported") \
@@ -100,6 +108,8 @@ VALUE_STRING_ARRAY(zh_close_reasons_names);
 static int hf_zenoh_transport_msg_type;
 static int hf_zenoh_net_msg_type;
 // static int hf_zenoh_declare_type;
+static int hf_init_is_ack;
+static int hf_open_is_ack;
 static int hf_zenoh_proto_version;
 static int hf_what_am_i;
 static int hf_zid;
@@ -151,6 +161,13 @@ static int hf_query_to_reply;
 static int hf_fragment_has_more;
 static int hf_close_session;
 static int hf_close_reason;
+static int hf_interest_mode;
+static int hf_interest_keyexprs;
+static int hf_interest_subscribers;
+static int hf_interest_queryables;
+static int hf_interest_tokens;
+static int hf_interest_restricted;
+static int hf_interest_aggregated;
 int ett_zenoh;
 
 static hf_register_info hf[] = {
@@ -178,6 +195,8 @@ static hf_register_info hf[] = {
             VALS(zh_declare_type_names), 0x1F,
             NULL, HFILL }
         },*/
+           {&hf_init_is_ack, {"Is ack", "zenohc.init.is_ack", FT_BOOLEAN, 8, NULL, 0x20, NULL, HFILL}},
+{&hf_open_is_ack, {"Is ack", "zenohc.open.is_ack", FT_BOOLEAN, 8, NULL, 0x20, NULL, HFILL}},
         {&hf_zenoh_proto_version, {"Protocol version", "zenohc.version", FT_UINT8, BASE_DEC, NULL, 0, NULL, HFILL}},
         {&hf_what_am_i, {"What A I", "zenohc.wai", FT_UINT8, BASE_DEC, VALS(zh_what_am_i_names), 0b11, NULL, HFILL}},
         {&hf_zid, {"ZID", "zenohc.zid", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL}},
@@ -293,6 +312,69 @@ static hf_register_info hf[] = {
          0,
          NULL,
          HFILL}},
+{&hf_interest_mode,
+     {"Interest mode",
+     "zenohc.interest.mode",
+     FT_UINT8,
+     BASE_DEC,
+     VALS(zh_interest_modes_names),
+     0b01100000,
+     NULL,
+         HFILL}},
+    {&hf_interest_keyexprs,
+         {"Key expressions",
+         "zenohc.interest.keyexprs",
+         FT_BOOLEAN,
+         8,
+         NULL,
+         (1 << 0),
+         NULL,
+             HFILL}},
+        {&hf_interest_subscribers,
+             {"Subscribers",
+             "zenohc.interest.subscribers",
+             FT_BOOLEAN,
+             8,
+             NULL,
+             (1 << 1),
+             NULL,
+                 HFILL}},
+        {&hf_interest_queryables,
+             {"Queryable",
+             "zenohc.interest.queryables",
+             FT_BOOLEAN,
+             8,
+             NULL,
+             (1 << 2),
+             NULL,
+                 HFILL}},
+        {&hf_interest_tokens,
+             {"Tokens",
+             "zenohc.interest.tokens",
+             FT_BOOLEAN,
+             8,
+             NULL,
+             (1 << 3),
+             NULL,
+                 HFILL}},
+        {&hf_interest_restricted,
+             {"Restricted to a key expression",
+             "zenohc.interest.restricted",
+             FT_BOOLEAN,
+             8,
+             NULL,
+             (1 << 4),
+             NULL,
+                 HFILL}},
+            {&hf_interest_aggregated,
+                 {"Replies should be aggregated",
+                 "zenohc.interest.aggregated",
+                 FT_BOOLEAN,
+                 8,
+                 NULL,
+                 (1 << 7),
+                 NULL,
+                 HFILL}},
 };
 
 static int dissect_declare_keyexpr(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, void *data)
@@ -374,11 +456,12 @@ static int dissect_declare(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, 
     const bool has_interest = (msg_header & 0x20) != 0;
     const bool has_exts = (msg_header & 0x80) != 0;
 
+    ++offset;
     if (has_interest)
         offset = dissect_zint(tvb, tree, offset, hf_interest, NULL, NULL);
 
     if (has_exts)
-        offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
+        offset = dissect_exts(tvb, pinfo, tree, offset, default_ext_dissector_table, NULL);
 
     const uint8_t decl_header = tvb_get_uint8(tvb, offset);
     const uint8_t decl_type = decl_header & 0x1f;
@@ -670,6 +753,40 @@ static int dissect_response_final(tvbuff_t *tvb, packet_info *pinfo, proto_tree 
     return offset;
 }
 
+static int dissect_interest(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, void *data)
+{
+    const uint8_t msg_header = tvb_get_uint8(tvb, offset);
+    const bool has_exts = (msg_header & 0x80) != 0;
+    const uint8_t interest_mode = (msg_header >> 5) & 0b11;
+
+    proto_tree_add_item(tree, hf_interest_mode, tvb, offset, 1, ENC_NA);
+    offset = dissect_zint(tvb, tree, offset + 1, hf_interest, NULL, NULL);
+
+    if (interest_mode != ZENOH_INTEREST_FINAL)
+    {
+        proto_tree *subtree = proto_tree_add_subtree(tree, tvb, offset, 1, ett_zenoh, NULL, "Matches");
+        proto_tree_add_item(subtree, hf_interest_keyexprs, tvb, offset, 1, ENC_NA);
+        proto_tree_add_item(subtree, hf_interest_subscribers, tvb, offset, 1, ENC_NA);
+        proto_tree_add_item(subtree, hf_interest_queryables, tvb, offset, 1, ENC_NA);
+        proto_tree_add_item(subtree, hf_interest_tokens, tvb, offset, 1, ENC_NA);
+        proto_tree_add_item(subtree, hf_interest_restricted, tvb, offset, 1, ENC_NA);
+        proto_tree_add_item(subtree, hf_interest_aggregated, tvb, offset, 1, ENC_NA);
+
+        const uint8_t flags = tvb_get_uint8(tvb, offset);
+        const bool mapping = flags & 0x40;
+        const bool named = flags & 0x20;
+        const bool restricted = flags & 0x10;
+        ++offset;
+        if (restricted)
+            offset = dissect_key_expr(tvb, pinfo, tree, offset, named, mapping, NULL);
+    }
+
+    if (has_exts)
+        offset = dissect_exts(tvb, pinfo, tree, offset, default_ext_dissector_table, NULL);
+
+    return offset;
+}
+
 static int dissect_linkstate(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, void *data)
 {
     const uint8_t header = tvb_get_uint8(tvb, offset);
@@ -780,6 +897,7 @@ static int dissect_net_message(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tr
         case ZENOH_NET_REQUEST: offset = dissect_request(tvb, pinfo, subtree, offset, data); break;
         case ZENOH_NET_RESPONSE: offset = dissect_response(tvb, pinfo, subtree, offset, data); break;
         case ZENOH_NET_RESPONSE_FINAL: offset = dissect_response_final(tvb, pinfo, subtree, offset, data); break;
+        case ZENOH_NET_INTEREST: return dissect_interest(tvb, pinfo, subtree, offset, data);
         case ZENOH_NET_OAM: offset = dissect_net_oam(tvb, pinfo, subtree, offset, data); break;
         default: return (int)tvb_reported_length(tvb);
     }
@@ -872,6 +990,7 @@ static int dissect_transport_open(tvbuff_t *tvb, packet_info *pinfo, proto_tree 
     const bool has_exts = (msg_header & 0x80) != 0;
 
     col_append_str(pinfo->cinfo, COL_INFO, is_ack ? ", OpenAck" : ", OpenSyn");
+    proto_tree_add_item(tree, hf_open_is_ack, tvb, 0, 1, ENC_NA);
 
     proto_item *lease_period_item;
     int offset = dissect_zint(tvb, tree, 1, hf_lease_time, &lease_period_item, NULL);
@@ -922,6 +1041,7 @@ dissect_init_compression(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, in
 }
 
 static struct ext_dissector_table_entry transport_init_exts[] = {
+     {1, &dissect_qos_ext},
         {6, &dissect_init_compression},
         {0, NULL},
 };
@@ -934,6 +1054,7 @@ static int dissect_transport_init(tvbuff_t *tvb, packet_info *pinfo, proto_tree 
     const bool has_exts = (msg_header & 0x80) != 0;
 
     col_append_str(pinfo->cinfo, COL_INFO, is_ack ? ", InitAck" : ", InitSyn");
+    proto_tree_add_item(tree, hf_init_is_ack, tvb, 0, 1, ENC_NA);
     proto_tree_add_item(tree, hf_zenoh_proto_version, tvb, 1, 1, ENC_LITTLE_ENDIAN);
     proto_tree_add_item(tree, hf_what_am_i, tvb, 2, 1, ENC_LITTLE_ENDIAN);
 
