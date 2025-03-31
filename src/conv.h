@@ -2,6 +2,24 @@
 
 #include <epan/packet.h>
 
+struct zenoh_subscriber_info_t
+{
+    uint32_t declaration_packet_id;
+    char *key_expr;
+};
+
+struct zenoh_queryable_info_t
+{
+    uint32_t declaration_packet_id;
+    char *key_expr;
+};
+
+struct zenoh_token_info_t
+{
+    uint32_t declaration_packet_id;
+    char *key_expr;
+};
+
 // Query data, stored in the sender side.
 struct zenoh_query_info_t
 {
@@ -11,7 +29,14 @@ struct zenoh_query_info_t
 
 struct zenoh_conv_data_side_t
 {
+    /// Contains const char*
     wmem_tree_t *expr_id_cache;
+    /// Contains struct zenoh_subscriber_info_t
+    wmem_tree_t *subscriber_id_cache;
+    /// Contains struct zenoh_queryable_info_t
+    wmem_tree_t *queryable_id_cache;
+    /// Contains struct zenoh_token_info_t
+    wmem_tree_t *token_id_cache;
     wmem_tree_t *query_frame_num_cache;
 };
 
@@ -42,6 +67,15 @@ struct zenoh_query_info_t *zenoh_query_info_new(wmem_allocator_t *allocator);
 char const *get_key_expr(const packet_info *pinfo, uint64_t scope_id, bool sender);
 void register_key_expr(const packet_info *pinfo, uint64_t expr_id, const char *key_expr);
 void register_zid(const packet_info *pinfo, const char *zid);
+
+void register_subscriber(const packet_info *pinfo, uint64_t subscriber_id, const char *key_expr);
+const struct zenoh_subscriber_info_t *get_subscriber(const packet_info *pinfo, uint64_t subscriber_id, bool sender);
+
+void register_queryable(const packet_info *pinfo, uint64_t queryable_id, const char *key_expr);
+const struct zenoh_queryable_info_t *get_queryable(const packet_info *pinfo, uint64_t queryable_id, bool sender);
+
+void register_token(const packet_info *pinfo, uint64_t token_id, const char *key_expr);
+const struct zenoh_token_info_t *get_token(const packet_info *pinfo, uint64_t token_id, bool sender);
 
 /// \note assumes the sender is the one queyring
 void register_query(const packet_info *pinfo, uint32_t query_id);

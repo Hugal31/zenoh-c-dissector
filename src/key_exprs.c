@@ -61,6 +61,8 @@ int dissect_key_expr(tvbuff_t *tvb,
     if (res)
     {
         proto_item_append_text(item, "%s", res);
+        if (scope != 0)
+            proto_item_set_generated(item);
         if (item && fvalue_type_ftenum(item->finfo->value) == FT_STRING)
             fvalue_set_string(item->finfo->value, res);
         if (ret)

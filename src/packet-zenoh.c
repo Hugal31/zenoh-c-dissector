@@ -168,6 +168,16 @@ static int hf_interest_queryables;
 static int hf_interest_tokens;
 static int hf_interest_restricted;
 static int hf_interest_aggregated;
+static int hf_declare_key_expr;
+static int hf_undeclare_key_expr;
+static int hf_declare_subscriber;
+static int hf_undeclare_subscriber;
+static int hf_declare_queryable;
+static int hf_undeclare_queryable;
+static int hf_declare_token;
+static int hf_undeclare_token;
+static int hf_declare_final;
+static int hf_declared_in;
 int ett_zenoh;
 
 static hf_register_info hf[] = {
@@ -298,6 +308,23 @@ static hf_register_info hf[] = {
          {"Restricted to a key expression", "zenohc.interest.restricted", FT_BOOLEAN, 8, NULL, (1 << 4), NULL, HFILL}},
         {&hf_interest_aggregated,
          {"Replies should be aggregated", "zenohc.interest.aggregated", FT_BOOLEAN, 8, NULL, (1 << 7), NULL, HFILL}},
+        {&hf_declare_key_expr, {"Declare KeyExpr", "zenohc.declare.keyexpr", FT_NONE, BASE_NONE, NULL, 0, NULL, HFILL}},
+        {&hf_undeclare_key_expr,
+         {"Undeclare KeyExpr", "zenohc.undeclare.keyexpr", FT_NONE, BASE_NONE, NULL, 0, NULL, HFILL}},
+        {&hf_declare_subscriber,
+         {"Declare Subscriber", "zenohc.declare.subscriber", FT_NONE, BASE_NONE, NULL, 0, NULL, HFILL}},
+        {&hf_undeclare_subscriber,
+         {"Undeclare Subscriber", "zenohc.undeclare.subscriber", FT_NONE, BASE_NONE, NULL, 0, NULL, HFILL}},
+        {&hf_declare_queryable,
+         {"Declare Subscriber", "zenohc.declare.queryable", FT_NONE, BASE_NONE, NULL, 0, NULL, HFILL}},
+        {&hf_undeclare_queryable,
+         {"Undeclare Subscriber", "zenohc.undeclare.queryable", FT_NONE, BASE_NONE, NULL, 0, NULL, HFILL}},
+        {&hf_declare_token, {"Declare Subscriber", "zenohc.declare.token", FT_NONE, BASE_NONE, NULL, 0, NULL, HFILL}},
+        {&hf_undeclare_token,
+         {"Undeclare Subscriber", "zenohc.undeclare.token", FT_NONE, BASE_NONE, NULL, 0, NULL, HFILL}},
+        {&hf_declare_final, {"Declare Final", "zenohc.declare.final", FT_NONE, BASE_NONE, NULL, 0, NULL, HFILL}},
+        {&hf_declared_in,
+         {"Declared in ", "zenohc.undeclare.declared_in", FT_FRAMENUM, BASE_NONE, NULL, 0, NULL, HFILL}},
 };
 
 static int dissect_declare_keyexpr(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, void *data)
@@ -320,6 +347,19 @@ static int dissect_declare_keyexpr(tvbuff_t *tvb, packet_info *pinfo, proto_tree
     return offset;
 }
 
+static int dissect_undeclare_keyexpr(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, void *data)
+{
+    const uint8_t msg_header = tvb_get_uint8(tvb, offset);
+    const bool has_exts = (msg_header & 0x80) != 0;
+
+    offset = dissect_key_expr(tvb, pinfo, tree, offset + 1, false, true, NULL);
+
+    if (has_exts)
+        offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
+
+    return offset;
+}
+
 static int dissect_declare_subscriber(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, void *data)
 {
     const uint8_t msg_header = tvb_get_uint8(tvb, offset);
@@ -327,9 +367,33 @@ static int dissect_declare_subscriber(tvbuff_t *tvb, packet_info *pinfo, proto_t
     const bool has_mapping = (msg_header & 0x40) != 0;
     const bool has_exts = (msg_header & 0x80) != 0;
 
-    uint64_t expr_id;
-    offset = dissect_zint(tvb, tree, offset + 1, hf_sub_id, NULL, &expr_id);
-    offset = dissect_key_expr(tvb, pinfo, tree, offset, has_named, has_mapping, NULL);
+    uint64_t sub_id;
+    offset = dissect_zint(tvb, tree, offset + 1, hf_sub_id, NULL, &sub_id);
+    const char *key_expr;
+    offset = dissect_key_expr(tvb, pinfo, tree, offset, has_named, has_mapping, &key_expr);
+
+    register_subscriber(pinfo, sub_id, key_expr);
+
+    if (has_exts)
+        offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
+
+    return offset;
+}
+
+static int dissect_undeclare_subscriber(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, void *data)
+{
+    const uint8_t msg_header = tvb_get_uint8(tvb, offset);
+    const bool has_exts = (msg_header & 0x80) != 0;
+
+    uint64_t subscriber_id;
+    offset = dissect_zint(tvb, tree, offset + 1, hf_sub_id, NULL, &subscriber_id);
+
+    const struct zenoh_subscriber_info_t *info = get_subscriber(pinfo, subscriber_id, true);
+    if (info)
+    {
+        proto_item_set_generated(proto_tree_add_uint(tree, hf_declared_in, tvb, 0, 0, info->declaration_packet_id));
+        proto_item_set_generated(proto_tree_add_string(tree, hf_key_expr, tvb, 0, 0, info->key_expr));
+    }
 
     if (has_exts)
         offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
@@ -344,10 +408,33 @@ static int dissect_declare_token(tvbuff_t *tvb, packet_info *pinfo, proto_tree *
     const bool has_mapping = (msg_header & 0x40) != 0;
     const bool has_exts = (msg_header & 0x80) != 0;
 
-    uint64_t expr_id;
-    offset = dissect_zint(tvb, tree, offset + 1, hf_token_id, NULL, &expr_id);
-    const char *res;
-    offset = dissect_key_expr(tvb, pinfo, tree, offset, has_named, has_mapping, &res);
+    uint64_t token_id;
+    offset = dissect_zint(tvb, tree, offset + 1, hf_token_id, NULL, &token_id);
+    const char *key_expr;
+    offset = dissect_key_expr(tvb, pinfo, tree, offset, has_named, has_mapping, &key_expr);
+
+    register_token(pinfo, token_id, key_expr);
+
+    if (has_exts)
+        offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
+
+    return offset;
+}
+
+static int dissect_undeclare_token(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, void *data)
+{
+    const uint8_t msg_header = tvb_get_uint8(tvb, offset);
+    const bool has_exts = (msg_header & 0x80) != 0;
+
+    uint64_t token_id;
+    offset = dissect_zint(tvb, tree, offset + 1, hf_token_id, NULL, &token_id);
+
+    const struct zenoh_token_info_t *info = get_token(pinfo, token_id, true);
+    if (info)
+    {
+        proto_item_set_generated(proto_tree_add_uint(tree, hf_declared_in, tvb, 0, 0, info->declaration_packet_id));
+        proto_item_set_generated(proto_tree_add_string(tree, hf_key_expr, tvb, 0, 0, info->key_expr));
+    }
 
     if (has_exts)
         offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
@@ -363,9 +450,11 @@ static int dissect_declare_queryable(tvbuff_t *tvb, packet_info *pinfo, proto_tr
     const bool has_exts = (msg_header & 0x80) != 0;
 
     ++offset;
-    read_zint(tvb, &offset);
+    const uint64_t queryable_id = read_zint(tvb, &offset);
+    const char *key_expr;
+    offset = dissect_key_expr(tvb, pinfo, tree, offset, has_named, has_mapping, &key_expr);
 
-    offset = dissect_key_expr(tvb, pinfo, tree, offset, has_named, has_mapping, NULL);
+    register_queryable(pinfo, queryable_id, key_expr);
 
     if (has_exts)
         offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
@@ -373,21 +462,95 @@ static int dissect_declare_queryable(tvbuff_t *tvb, packet_info *pinfo, proto_tr
     return offset;
 }
 
-static int dissect_declare(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, void *data)
+static int dissect_undeclare_queryable(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, void *data)
 {
+    const uint8_t msg_header = tvb_get_uint8(tvb, offset);
+    const bool has_exts = (msg_header & 0x80) != 0;
+
+    ++offset;
+    uint64_t queryable_id = read_zint(tvb, &offset);
+
+    const struct zenoh_queryable_info_t *info = get_queryable(pinfo, queryable_id, true);
+    if (info)
+    {
+        proto_item_set_generated(proto_tree_add_uint(tree, hf_declared_in, tvb, 0, 0, info->declaration_packet_id));
+        proto_item_set_generated(proto_tree_add_string(tree, hf_key_expr, tvb, 0, 0, info->key_expr));
+    }
+
+    if (has_exts)
+        offset = dissect_exts(tvb, pinfo, tree, offset, NULL, NULL);
+
+    return offset;
+}
+
+static int dissect_declare(tvbuff_t *tvb, packet_info *pinfo, proto_tree *parent_tree, int offset, void *data)
+{
+    const int start_offset = offset;
     const uint8_t msg_header = tvb_get_uint8(tvb, offset);
     const bool has_interest = (msg_header & 0x20) != 0;
     const bool has_exts = (msg_header & 0x80) != 0;
 
+    uint8_t decl_type;
+
     ++offset;
+    // Fetch the sub-declare type.
+    {
+        int offset2 = offset;
+        if (has_interest)
+            read_zint(tvb, &offset2);
+        if (has_exts)
+            offset2 = dissect_exts(tvb, pinfo, NULL, offset2, NULL, NULL);
+
+        const uint8_t decl_header = tvb_get_uint8(tvb, offset2);
+        decl_type = decl_header & 0x1f;
+    }
+
+    proto_item *item;
+    switch (decl_type)
+    {
+        case ZENOH_DECL_KEYEXPR:
+            item = proto_tree_add_item(parent_tree, hf_declare_key_expr, tvb, start_offset, -1, ENC_NA);
+            break;
+        case ZENOH_DECL_UKEYEXPR:
+            item = proto_tree_add_item(parent_tree, hf_undeclare_key_expr, tvb, start_offset, -1, ENC_NA);
+            break;
+        case ZENOH_DECL_SUB:
+            item = proto_tree_add_item(parent_tree, hf_declare_subscriber, tvb, start_offset, -1, ENC_NA);
+            break;
+        case ZENOH_DECL_USUB:
+            item = proto_tree_add_item(parent_tree, hf_undeclare_subscriber, tvb, start_offset, -1, ENC_NA);
+            break;
+        case ZENOH_DECL_QUER:
+            item = proto_tree_add_item(parent_tree, hf_declare_queryable, tvb, start_offset, -1, ENC_NA);
+            break;
+        case ZENOH_DECL_UQUER:
+            item = proto_tree_add_item(parent_tree, hf_undeclare_queryable, tvb, start_offset, -1, ENC_NA);
+            break;
+        case ZENOH_DECL_TOK:
+            item = proto_tree_add_item(parent_tree, hf_declare_queryable, tvb, start_offset, -1, ENC_NA);
+            break;
+        case ZENOH_DECL_UTOK:
+            item = proto_tree_add_item(parent_tree, hf_undeclare_token, tvb, start_offset, -1, ENC_NA);
+            break;
+        case ZENOH_DECL_FINAL:
+            item = proto_tree_add_item(parent_tree, hf_declare_final, tvb, start_offset, -1, ENC_NA);
+            break;
+        default:
+            item = proto_tree_add_string(parent_tree,
+                                         hf_text_only,
+                                         tvb,
+                                         start_offset,
+                                         tvb_reported_length_remaining(tvb, offset),
+                                         "Unknown");
+            break;
+    }
+    proto_tree *tree = proto_item_add_subtree(item, ett_zenoh);
+
     if (has_interest)
         offset = dissect_zint(tvb, tree, offset, hf_interest, NULL, NULL);
 
     if (has_exts)
         offset = dissect_exts(tvb, pinfo, tree, offset, default_ext_dissector_table, NULL);
-
-    const uint8_t decl_header = tvb_get_uint8(tvb, offset);
-    const uint8_t decl_type = decl_header & 0x1f;
 
     char const *str = try_val_to_str(decl_type, zh_declare_type_names);
     if (str)
@@ -395,12 +558,18 @@ static int dissect_declare(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, 
 
     switch (decl_type)
     {
-        case ZENOH_DECL_KEYEXPR: return dissect_declare_keyexpr(tvb, pinfo, tree, offset, data);
-        case ZENOH_DECL_SUB: return dissect_declare_subscriber(tvb, pinfo, tree, offset, data);
-        case ZENOH_DECL_TOK: return dissect_declare_token(tvb, pinfo, tree, offset, data);
-        case ZENOH_DECL_QUER: return dissect_declare_queryable(tvb, pinfo, tree, offset, data);
-        default: return (int)tvb_reported_length(tvb);
+        case ZENOH_DECL_KEYEXPR: offset = dissect_declare_keyexpr(tvb, pinfo, tree, offset, data); break;
+        case ZENOH_DECL_UKEYEXPR: offset = dissect_undeclare_keyexpr(tvb, pinfo, tree, offset, data); break;
+        case ZENOH_DECL_SUB: offset = dissect_declare_subscriber(tvb, pinfo, tree, offset, data); break;
+        case ZENOH_DECL_USUB: offset = dissect_undeclare_subscriber(tvb, pinfo, tree, offset, data); break;
+        case ZENOH_DECL_TOK: offset = dissect_declare_token(tvb, pinfo, tree, offset, data); break;
+        case ZENOH_DECL_UTOK: offset = dissect_undeclare_token(tvb, pinfo, tree, offset, data); break;
+        case ZENOH_DECL_QUER: offset = dissect_declare_queryable(tvb, pinfo, tree, offset, data); break;
+        case ZENOH_DECL_UQUER: offset = dissect_undeclare_queryable(tvb, pinfo, tree, offset, data); break;
+        default: return offset = (int)tvb_reported_length(tvb); break;
     }
+    proto_item_set_end(item, tvb, offset);
+    return offset;
 }
 
 void dissect_attachment(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, int length, void *data)
@@ -804,18 +973,23 @@ static int dissect_net_message(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tr
         default: hfindex = hf_text_only; break;
         case ZENOH_NET_OAM: hfindex = hf_net_oam; break;
     }
-    proto_item *subtree_item = proto_tree_add_item(tree, hfindex, tvb, offset, 1, ENC_NA);
-    proto_item_set_text(subtree_item, "%s", type_str ? type_str : "Unknown");
-    proto_tree *subtree = proto_item_add_subtree(subtree_item, ett_zenoh);
+    proto_tree *subtree = NULL;
+    proto_item *subtree_item = NULL;
+    if (msg_type != ZENOH_NET_DECLARE)
+    {
+        subtree_item = proto_tree_add_item(tree, hfindex, tvb, offset, 1, ENC_NA);
+        proto_item_set_text(subtree_item, "%s", type_str ? type_str : "Unknown");
+        subtree = proto_item_add_subtree(subtree_item, ett_zenoh);
 
-    if (type_str == NULL)
-        proto_item_append_text(subtree_item, " (%u)", msg_type);
+        if (type_str == NULL)
+            proto_item_append_text(subtree_item, " (%u)", msg_type);
+    }
 
     col_append_str(pinfo->cinfo, COL_INFO, type_str ? type_str : "Unknown");
 
     switch (msg_type)
     {
-        case ZENOH_NET_DECLARE: offset = dissect_declare(tvb, pinfo, subtree, offset, data); break;
+        case ZENOH_NET_DECLARE: offset = dissect_declare(tvb, pinfo, tree, offset, data); break;
         case ZENOH_NET_PUSH: offset = dissect_push(tvb, pinfo, subtree, offset, data); break;
         case ZENOH_NET_REQUEST: offset = dissect_request(tvb, pinfo, subtree, offset, data); break;
         case ZENOH_NET_RESPONSE: offset = dissect_response(tvb, pinfo, subtree, offset, data); break;
@@ -825,7 +999,8 @@ static int dissect_net_message(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tr
         default: return (int)tvb_reported_length(tvb);
     }
 
-    proto_item_set_end(subtree_item, tvb, offset);
+    if (subtree_item)
+        proto_item_set_end(subtree_item, tvb, offset);
     return offset;
 }
 
@@ -1181,8 +1356,7 @@ static void proto_register_zenoh(void)
     proto_register_field_array(proto_zenoh, hf, array_length(hf));
     proto_register_subtree_array(ett, array_length(ett));
 
-    zenoh_handle =
-            register_dissector_with_description("zenohc", "The Zenoh protocol dissector", dissect_zenoh, proto_zenoh);
+    zenoh_handle = register_dissector_with_description("zenohc", "Zenoh", dissect_zenoh, proto_zenoh);
 }
 
 static void proto_reg_handoff_zenoh(void)

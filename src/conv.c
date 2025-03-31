@@ -10,6 +10,9 @@ static struct zenoh_conv_data_t *zenoh_conv_new(wmem_allocator_t *allocator)
     for (int i = 0; i < 2; ++i)
     {
         conv->sides[i].expr_id_cache = wmem_tree_new(allocator);
+        conv->sides[i].subscriber_id_cache = wmem_tree_new(allocator);
+        conv->sides[i].queryable_id_cache = wmem_tree_new(allocator);
+        conv->sides[i].token_id_cache = wmem_tree_new(allocator);
         conv->sides[i].query_frame_num_cache = wmem_tree_new(allocator);
     }
     return conv;
@@ -82,6 +85,102 @@ char const *get_key_expr(const packet_info *pinfo, uint64_t scope_id, bool sende
     const char *res = wmem_tree_lookup32(cache, scope_id);
     if (!res)
         printf("Failed to fetch expression '%lu' in packet %d\n", scope_id, pinfo->num);
+    return res;
+}
+
+void register_subscriber(const packet_info *pinfo, uint64_t subscriber_id, const char *key_expr)
+{
+    struct zenoh_conv_data_t *zconv = get_zenoh_conv_data(pinfo);
+    if (!zconv)
+        return;
+
+    uint8_t low_or_high = is_low_or_high(pinfo);
+    wmem_tree_t *cache = zconv->sides[low_or_high].subscriber_id_cache;
+    DISSECTOR_ASSERT_HINT(subscriber_id < (2ULL << 32), "Subscriber ID too high");
+    if (!wmem_tree_contains32(cache, subscriber_id))
+    {
+        struct zenoh_subscriber_info_t *subscriber_info = wmem_new(wmem_file_scope(), struct zenoh_subscriber_info_t);
+        subscriber_info->declaration_packet_id = pinfo->num;
+        subscriber_info->key_expr = wmem_strdup(wmem_file_scope(), key_expr);
+        wmem_tree_insert32(cache, subscriber_id, subscriber_info);
+    }
+}
+
+const struct zenoh_subscriber_info_t *get_subscriber(const packet_info *pinfo, uint64_t subscriber_id, bool sender)
+{
+    struct zenoh_conv_data_t *zconv = get_zenoh_conv_data(pinfo);
+    if (!zconv)
+        return NULL;
+
+    uint8_t low_or_high = is_low_or_high(pinfo);
+    if (!sender)
+        low_or_high = !low_or_high;
+    wmem_tree_t *cache = zconv->sides[low_or_high].subscriber_id_cache;
+    const struct zenoh_subscriber_info_t *res = wmem_tree_lookup32(cache, subscriber_id);
+    return res;
+}
+
+void register_queryable(const packet_info *pinfo, uint64_t queryable_id, const char *key_expr)
+{
+    struct zenoh_conv_data_t *zconv = get_zenoh_conv_data(pinfo);
+    if (!zconv)
+        return;
+
+    uint8_t low_or_high = is_low_or_high(pinfo);
+    wmem_tree_t *cache = zconv->sides[low_or_high].token_id_cache;
+    DISSECTOR_ASSERT_HINT(queryable_id < (2ULL << 32), "Subscriber ID too high");
+    if (!wmem_tree_contains32(cache, queryable_id))
+    {
+        struct zenoh_queryable_info_t *subscriber_info = wmem_new(wmem_file_scope(), struct zenoh_queryable_info_t);
+        subscriber_info->declaration_packet_id = pinfo->num;
+        subscriber_info->key_expr = wmem_strdup(wmem_file_scope(), key_expr);
+        wmem_tree_insert32(cache, queryable_id, subscriber_info);
+    }
+}
+
+const struct zenoh_queryable_info_t *get_queryable(const packet_info *pinfo, uint64_t queryable_id, bool sender)
+{
+    struct zenoh_conv_data_t *zconv = get_zenoh_conv_data(pinfo);
+    if (!zconv)
+        return NULL;
+
+    uint8_t low_or_high = is_low_or_high(pinfo);
+    if (!sender)
+        low_or_high = !low_or_high;
+    wmem_tree_t *cache = zconv->sides[low_or_high].queryable_id_cache;
+    const struct zenoh_queryable_info_t *res = wmem_tree_lookup32(cache, queryable_id);
+    return res;
+}
+
+void register_token(const packet_info *pinfo, uint64_t token_id, const char *key_expr)
+{
+    struct zenoh_conv_data_t *zconv = get_zenoh_conv_data(pinfo);
+    if (!zconv)
+        return;
+
+    uint8_t low_or_high = is_low_or_high(pinfo);
+    wmem_tree_t *cache = zconv->sides[low_or_high].token_id_cache;
+    DISSECTOR_ASSERT_HINT(token_id < (2ULL << 32), "Subscriber ID too high");
+    if (!wmem_tree_contains32(cache, token_id))
+    {
+        struct zenoh_token_info_t *subscriber_info = wmem_new(wmem_file_scope(), struct zenoh_token_info_t);
+        subscriber_info->declaration_packet_id = pinfo->num;
+        subscriber_info->key_expr = wmem_strdup(wmem_file_scope(), key_expr);
+        wmem_tree_insert32(cache, token_id, subscriber_info);
+    }
+}
+
+const struct zenoh_token_info_t *get_token(const packet_info *pinfo, uint64_t token_id, bool sender)
+{
+    struct zenoh_conv_data_t *zconv = get_zenoh_conv_data(pinfo);
+    if (!zconv)
+        return NULL;
+
+    uint8_t low_or_high = is_low_or_high(pinfo);
+    if (!sender)
+        low_or_high = !low_or_high;
+    wmem_tree_t *cache = zconv->sides[low_or_high].token_id_cache;
+    const struct zenoh_token_info_t *res = wmem_tree_lookup32(cache, token_id);
     return res;
 }
 
