@@ -574,50 +574,23 @@ static int dissect_declare(tvbuff_t *tvb, packet_info *pinfo, proto_tree *parent
 
 void dissect_attachment(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, int length, void *data)
 {
-    // Try to dissect rmw_zenoh style attachement: strings + U64.
-    const int all_start = offset;
+    proto_tree *subtree = proto_tree_add_subtree(tree, tvb, offset, length, ett_zenoh, NULL, "Attachments");
+    if (length < 40)
+        return;
+
     const int end = offset + length;
-    proto_tree *subtree = NULL;
-    while (offset < end)
-    {
-        int str_len = (int)read_zint(tvb, &offset);
 
-        if (offset + str_len > end)
-            return;
+    proto_tree_add_item(subtree, hf_rmw_zenoh_sequence_number, tvb, offset, 8, ENC_LITTLE_ENDIAN);
+    offset += 8;
 
-        char *key = wmem_alloc(pinfo->pool, str_len + 1);
-        tvb_memcpy(tvb, key, offset, str_len);
-        key[str_len] = '\0';
-        offset += str_len;
+    const uint64_t value = tvb_get_uint64(tvb, offset, ENC_LITTLE_ENDIAN);
+    nstime_t time;
+    time.secs = (time_t)(value / 1000000000);
+    time.nsecs = (int)(value % 1000000000);
+    proto_tree_add_time(subtree, hf_rmw_zenoh_timestamp, tvb, offset, 8, &time);
+    offset += 8;
 
-        if (!subtree)
-            subtree = proto_tree_add_subtree(tree, tvb, all_start, length, ett_zenoh, NULL, "Attachments");
-
-        if (strcmp(key, "sequence_number") == 0)
-        {
-            proto_tree_add_item(subtree, hf_rmw_zenoh_sequence_number, tvb, offset, 8, ENC_LITTLE_ENDIAN);
-            offset += 8;
-        }
-        else if (strcmp(key, "source_timestamp") == 0)
-        {
-            const uint64_t value = tvb_get_uint64(tvb, offset, ENC_LITTLE_ENDIAN);
-            nstime_t time;
-            time.secs = (time_t)(value / 1000000000);
-            time.nsecs = (int)(value % 1000000000);
-            proto_tree_add_time(subtree, hf_rmw_zenoh_timestamp, tvb, offset, 8, &time);
-            offset += 8;
-        }
-        else if (strcmp(key, "source_gid") == 0)
-        {
-            proto_tree_add_item(subtree, hf_rmw_zenoh_source_gid, tvb, offset, end - offset, ENC_NA);
-            offset = end;
-        }
-        else
-        {
-            offset = end;
-        }
-        wmem_free(pinfo->pool, key);
-    }
+    proto_tree_add_item(subtree, hf_rmw_zenoh_source_gid, tvb, offset, end - offset, ENC_NA);
 }
 
 static struct ext_dissector_table_entry put_exts[] = {
