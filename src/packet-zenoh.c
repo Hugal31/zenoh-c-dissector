@@ -134,6 +134,7 @@ static int hf_query_id;
 static int hf_interest;
 static int hf_sub_id;
 static int hf_token_id;
+static int hf_queryable_id;
 static int hf_timestamp;
 static int hf_timestamp_hlc;
 static int hf_encoding_id;
@@ -232,6 +233,7 @@ static hf_register_info hf[] = {
         {&hf_interest, {"Interest ID", "zenohc.interest_id", FT_UINT32, BASE_DEC, NULL, 0, NULL, HFILL}},
         {&hf_sub_id, {"Subscription ID", "zenohc.sub_id", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL}},
         {&hf_token_id, {"Token ID", "zenohc.token_id", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL}},
+        {&hf_queryable_id, {"Queryable ID", "zenohc.queryable_id", FT_UINT64, BASE_DEC, NULL, 0, NULL, HFILL}},
         {&hf_timestamp, {"Timestamp", "zenohc.timestamp", FT_ABSOLUTE_TIME, ABSOLUTE_TIME_LOCAL, NULL, 0, NULL, HFILL}},
         {&hf_timestamp_hlc, {"Timestamp HLC ID", "zenohc.timestamp.hlc", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL}},
         {&hf_encoding_id, {"Encoding ID", "zenohc.encoding.id", FT_UINT8, BASE_DEC, NULL, 0xFE, NULL, HFILL}},
@@ -450,7 +452,8 @@ static int dissect_declare_queryable(tvbuff_t *tvb, packet_info *pinfo, proto_tr
     const bool has_exts = (msg_header & 0x80) != 0;
 
     ++offset;
-    const uint64_t queryable_id = read_zint(tvb, &offset);
+    uint64_t queryable_id = 0;
+    offset = dissect_zint(tvb, tree, offset, hf_queryable_id, NULL, &queryable_id);
     const char *key_expr;
     offset = dissect_key_expr(tvb, pinfo, tree, offset, has_named, has_mapping, &key_expr);
 
@@ -468,7 +471,8 @@ static int dissect_undeclare_queryable(tvbuff_t *tvb, packet_info *pinfo, proto_
     const bool has_exts = (msg_header & 0x80) != 0;
 
     ++offset;
-    uint64_t queryable_id = read_zint(tvb, &offset);
+    uint64_t queryable_id = 0;
+    offset = dissect_zint(tvb, tree, offset, hf_queryable_id, NULL, &queryable_id);
 
     const struct zenoh_queryable_info_t *info = get_queryable(pinfo, queryable_id, true);
     if (info)
