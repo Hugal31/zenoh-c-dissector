@@ -47,7 +47,7 @@ tvbuff_t *zenoh_tvb_uncompress_lz4(tvbuff_t *tvb, const int offset, int comprlen
 
 tvbuff_t *zenoh_tvb_child_uncompress_lz4(tvbuff_t *parent, tvbuff_t *tvb, const int offset, int comprlen)
 {
-    tvbuff_t *new_tvb = tvb_uncompress_lz4(tvb, offset, comprlen);
+    tvbuff_t *new_tvb = zenoh_tvb_uncompress_lz4(tvb, offset, comprlen);
     if (new_tvb)
         tvb_set_child_real_data_tvbuff(parent, new_tvb);
     return new_tvb;
