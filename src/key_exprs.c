@@ -34,11 +34,10 @@ int dissect_key_expr(tvbuff_t *tvb,
 
     wmem_allocator_t *allocator = pinfo->pool;
     char const *res = NULL;
-    bool do_free = false;
+    bool do_free = suffix != NULL;
     if (scope == 0)
     {
         res = suffix ? wmem_strdup(allocator, suffix) : "";
-        do_free = true;
     }
     else
     {
@@ -49,7 +48,6 @@ int dissect_key_expr(tvbuff_t *tvb,
         {
             const size_t len = strlen(prefix) + 1 + strlen(suffix) + 1;
             char *buf = wmem_alloc(allocator, len);
-            do_free = true;
             if (suffix[0] == '/')
                 snprintf(buf, len, "%s%s", prefix, suffix);
             else
@@ -76,7 +74,7 @@ int dissect_key_expr(tvbuff_t *tvb,
     {
         *ret = res;
     }
-    else if (do_free && res && res[0] != '\0')
+    else if (do_free && res)
     {
         wmem_free(allocator, (char *)res);
     }
