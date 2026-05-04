@@ -1327,13 +1327,13 @@ static void proto_register_zenoh(void)
 
     proto_zenoh = proto_register_protocol("Zenoh Protocol", /* protocol name        */
                                           "Zenoh", /* protocol short name  */
-                                          "zenohc" /* protocol filter_name */
+                                          "zenoh" /* protocol filter_name */
     );
 
     proto_register_field_array(proto_zenoh, hf, array_length(hf));
     proto_register_subtree_array(ett, array_length(ett));
 
-    zenoh_handle = register_dissector_with_description("zenohc", "Zenoh", dissect_zenoh, proto_zenoh);
+    zenoh_handle = register_dissector_with_description("zenoh", "Zenoh", dissect_zenoh, proto_zenoh);
 }
 
 static void proto_reg_handoff_zenoh(void)

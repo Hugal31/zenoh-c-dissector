@@ -12,6 +12,10 @@ int dissect_key_expr(tvbuff_t *tvb,
                      bool mapping,
                      const char **ret)
 {
+    const int start_offset = offset;
+
+    /* Use a placeholder item first so we can attach a subtree for the sub-fields.
+     * We replace it with a proper proto_tree_add_string() after res is computed. */
     proto_item *item = proto_tree_add_item(tree, hf_key_expr, tvb, offset, 0, ENC_ASCII);
     proto_tree *subtree = proto_item_add_subtree(item, ett_zenoh);
 
@@ -30,11 +34,10 @@ int dissect_key_expr(tvbuff_t *tvb,
 
     wmem_allocator_t *allocator = pinfo->pool;
     char const *res = NULL;
-    bool do_free = false;
+    bool do_free = suffix != NULL;
     if (scope == 0)
     {
-        res = wmem_strdup(allocator, suffix);
-        do_free = true;
+        res = suffix ? wmem_strdup(allocator, suffix) : "";
     }
     else
     {
@@ -45,7 +48,6 @@ int dissect_key_expr(tvbuff_t *tvb,
         {
             const size_t len = strlen(prefix) + 1 + strlen(suffix) + 1;
             char *buf = wmem_alloc(allocator, len);
-            do_free = true;
             if (suffix[0] == '/')
                 snprintf(buf, len, "%s%s", prefix, suffix);
             else
@@ -58,23 +60,24 @@ int dissect_key_expr(tvbuff_t *tvb,
         }
     }
 
+    /* Update the placeholder item: set the length and the resolved string value.
+     * Avoid fvalue_set_string() on a live proto_item — it corrupts WS's internal
+     * wmem bookkeeping on subsequent packets.  Use proto_item_set_text() for the
+     * display label and let the correct TVB-backed fvalue stay untouched. */
+    proto_item_set_len(item, offset - start_offset);
+    if (scope != 0)
+        proto_item_set_generated(item);
     if (res)
+        proto_item_set_text(item, "Key Expr: %s", res);
+
+    if (ret)
     {
-        proto_item_append_text(item, "%s", res);
-        if (scope != 0)
-            proto_item_set_generated(item);
-        if (item && fvalue_type_ftenum(item->finfo->value) == FT_STRING)
-            fvalue_set_string(item->finfo->value, res);
-        if (ret)
-        {
-            *ret = res;
-        }
-        else if (do_free)
-        {
-            wmem_free(allocator, (char *)res);
-        }
+        *ret = res;
+    }
+    else if (do_free && res)
+    {
+        wmem_free(allocator, (char *)res);
     }
 
-    proto_item_set_end(item, tvb, offset);
     return offset;
 }
